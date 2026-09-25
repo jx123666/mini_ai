@@ -4,6 +4,7 @@
 #   1) Tensor 与基础算子
 #   2) 单元测试（极简框架 + 可选 GoogleTest）
 #   3) Tokenizer（ASCII / JSON 词表 / BPE）
+#   4) KV Cache 与 Context（Batch / Forward / RadixTree / RequestContext）
 #
 # 用法：
 #   mkdir build && cd build
@@ -28,7 +29,7 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${CMAKE_SOURCE_DIR})
 
 # ---------------------------------------------------------------------------
-# 核心库源文件（Tensor + 算子 + matmul 分发）
+# 核心库源文件（Tensor + 算子 + Tokenizer + KV Cache / Context）
 # ---------------------------------------------------------------------------
 set(MINI_AI_CORE_SOURCES
     src/tensor.cc
@@ -38,6 +39,14 @@ set(MINI_AI_CORE_SOURCES
     src/json_vocab_tokenizer.cc
     src/bpe_tokenizer.cc
     src/gguf_tokenizer.cc
+    src/model.cc
+    src/kv_cache.cc
+    src/context.cc
+    src/batch.cc
+    src/forward.cc
+    src/radix_tree.cc
+    src/request_context.cc
+    src/chat.cc
 )
 
 # ---------------------------------------------------------------------------
@@ -49,6 +58,11 @@ set(MINI_TEST_SOURCES
     tests/test_tensor.cc
     tests/test_ops.cc
     tests/test_tokenizer.cc
+    tests/test_kv_cache.cc
+    tests/test_batch.cc
+    tests/test_radix_tree.cc
+    tests/test_request_context.cc
+    tests/test_chat.cc
 )
 
 add_executable(mini-ai-tests ${MINI_TEST_SOURCES})

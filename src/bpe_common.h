@@ -48,9 +48,10 @@ inline std::vector<std::string> BuildBytesToUnicode() {
   for (int c = 0xAE; c <= 0xFF; ++c) {
     bs.push_back(c);
   }
-  //将bs中的码点转换为Unicode码点
-  std::vector<int> cs
-  //遍历256个字符，如果bs中没有b，则将b添加到bs中，并将其转换为Unicode码点
+  //先把可见字符的码点拷一份；后面缺的字节用 256+n 补上
+  std::vector<int> cs = bs;
+  int n = 0;
+  //遍历 0..255，缺的字节补进 bs，并映射到额外的 Unicode 码点
   for (int b = 0; b < 256; ++b) {
     if (std::find(bs.begin(), bs.end(), b) == bs.end()) {
       bs.push_back(b);

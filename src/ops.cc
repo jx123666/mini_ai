@@ -91,11 +91,7 @@ Tensor Silu(const Tensor& x) {
   return y;
 }
 
-//ElementwiseMul实现
-//输入a的形状为[n]
-//输入b的形状为[n]
-//输出y的形状为[n]
-//输出y的每个元素为a与b的点积
+//ElementwiseMul：逐元素相乘
 Tensor ElementwiseMul(const Tensor& a, const Tensor& b) {
   if (a.shape != b.shape) {
     throw std::runtime_error("ElementwiseMul: shape mismatch " +
@@ -108,6 +104,21 @@ Tensor ElementwiseMul(const Tensor& a, const Tensor& b) {
   }
   return y;
 }
+
+//ElementwiseAdd：逐元素相加，残差 x + sublayer(x)
+Tensor ElementwiseAdd(const Tensor& a, const Tensor& b) {
+  if (a.shape != b.shape) {
+    throw std::runtime_error("ElementwiseAdd: shape mismatch " +
+                             a.ShapeStringShort() + " vs " +
+                             b.ShapeStringShort());
+  }
+  Tensor y(a.shape, 0.0f);
+  for (size_t i = 0; i < a.data.size(); ++i) {
+    y.data[i] = a.data[i] + b.data[i];
+  }
+  return y;
+}
+
 //SwiGlu实现
 //输入gate的形状为[n]
 //输入up的形状为[n]
@@ -120,7 +131,7 @@ Tensor SwiGlu(const Tensor& gate, const Tensor& up) {
                              up.ShapeStringShort());
   }
   Tensor y(gate.shape, 0.0f);
-  
+
   for (size_t i = 0; i < gate.data.size(); ++i) {
     const float val = gate.data[i];
     const float sigmoid = 1.0f / (1.0f + std::exp(-val));//计算gate的sigmoid
@@ -128,7 +139,48 @@ Tensor SwiGlu(const Tensor& gate, const Tensor& up) {
   }
   return y;
 }
-//
+
+//对每个 head 做标准 RoPE：相邻两维 (x0,x1) 旋转一下
+void ApplyRopeNormalToHeads(Tensor& x, int pos, float theta) {
+  const int n_heads = x.shape[0];
+  const int head_dim = x.shape[1];
+  for (int h = 0; h < n_heads; ++h) {
+    for (int i = 0; i < head_dim; i += 2) {
+      const float freq =
+          1.0f / std::pow(theta, static_cast<float>(i) /
+                                     static_cast<float>(head_dim));
+      const float cos_val = std::cos(static_cast<float>(pos) * freq);
+      const float sin_val = std::sin(static_cast<float>(pos) * freq);
+      const float x0 = x.data[h * head_dim + i];
+      const float x1 = x.data[h * head_dim + i + 1];
+      x.data[h * head_dim + i] = x0 * cos_val - x1 * sin_val;
+      x.data[h * head_dim + i + 1] = x0 * sin_val + x1 * cos_val;
+    }
+  }
+}
+
+//RoPE：给 Q、K 写入位置信息，Attention 才能区分前后
+void Rope(Tensor& q, Tensor& k, int pos, float theta) {
+  if (q.num_dims() != 2 || k.num_dims() != 2) {
+    throw std::runtime_error("Rope: expected 2D tensors");
+  }
+  if (pos < 0) {
+    throw std::out_of_range("Rope: position must be non-negative");
+  }
+  if (!std::isfinite(theta) || theta <= 0.0f) {
+    throw std::runtime_error("Rope: theta must be finite and positive");
+  }
+  if (q.shape[1] != k.shape[1]) {
+    throw std::runtime_error("Rope: q and k head_dim mismatch");
+  }
+  if (q.shape[1] <= 0 || q.shape[1] % 2 != 0) {
+    throw std::runtime_error("Rope: head_dim must be positive and even");
+  }
+  ApplyRopeNormalToHeads(q, pos, theta);
+  ApplyRopeNormalToHeads(k, pos, theta);
+}
+
+//ArgMax：找最大值下标，greedy 采样用
 int ArgMax(const Tensor& x) {
   if (x.size() == 0) {
     throw std::runtime_error("ArgMax: cannot compute ArgMax of empty tensor");

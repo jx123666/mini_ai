@@ -4,11 +4,13 @@
 #include "mini_llama/batch.h"
 #include "mini_llama/context.h"
 #include "mini_llama/forward.h"
+#include "mini_llama/loader.h"
 #include "mini_llama/model.h"
 #include "tests/test_main.h"
 
 using mini_llama::ForwardBatch;
 using mini_llama::ForwardToken;
+using mini_llama::LoadModel;
 using mini_llama::MakeToyModel;
 using mini_llama::MiniBatch;
 using mini_llama::MiniLlamaContext;
@@ -16,11 +18,19 @@ using mini_llama::MiniLlamaModel;
 using mini_llama::ModelConfig;
 using mini_llama::Tensor;
 
-//测试用模型
+//Forward 用例优先加载 tiny 真权重；失败再退回零权重玩具模型
 static MiniLlamaModel MakeSmallToy() {
+  MiniLlamaModel model =
+      LoadModel("models/tiny/model.json", "models/tiny/model.bin");
+  if (model.loaded && !model.layers.empty()) {
+    return model;
+  }
   ModelConfig cfg;
   cfg.vocab_size = 128;
+  cfg.dim = 8;
+  cfg.hidden_dim = 16;
   cfg.n_layers = 2;
+  cfg.n_heads = 2;
   cfg.n_kv_heads = 2;
   cfg.head_dim = 4;
   cfg.max_seq_len = 32;
@@ -91,9 +101,12 @@ static bool TestForwardBatchPrefillMatchesIndividual() {
   return true;
 }
 
-//更新context
+//更新 context；用 tiny 真权重，才能看到 cache 里写出非零
 static bool TestForwardBatchUpdatesContext() {
   MiniLlamaModel model = MakeSmallToy();
+  if (!model.loaded || model.layers.empty()) {
+    MINI_LLAMA_ASSERT_FAIL("Failed to load tiny model");
+  }
   std::vector<int> tokens = {1, 10, 11};
   MiniLlamaContext ctx(&model);
   MiniBatch batch = MiniBatch::FromTokens(tokens, 0);
@@ -107,7 +120,7 @@ static bool TestForwardBatchUpdatesContext() {
   MINI_LLAMA_ASSERT_EQ(ctx.n_prefill_tokens, 3);
   MINI_LLAMA_ASSERT_EQ(ctx.n_decode_tokens, 0);
 
-  //确认pos=1的key不是全 0
+  //确认 pos=1 的 key 已经写进去了
   const float* k = ctx.kv_cache.KeyPtr(0, 1, 0);
   MINI_LLAMA_ASSERT_TRUE(k[0] != 0.0f);
   return true;

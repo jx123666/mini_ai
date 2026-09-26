@@ -57,8 +57,15 @@ Tensor Silu(const Tensor& x);
 // 逐元素相乘
 Tensor ElementwiseMul(const Tensor& a, const Tensor& b);
 
+// 逐元素相加，残差连接会用到
+Tensor ElementwiseAdd(const Tensor& a, const Tensor& b);
+
 // SwiGLU(gate, up) = SiLU(gate) * up，LLaMA FFN 的门控形式
 Tensor SwiGlu(const Tensor& gate, const Tensor& up);
+
+// RoPE：给 Q/K 加上位置信息
+// q: [n_heads, head_dim]，k: [n_kv_heads, head_dim]，原地修改
+void Rope(Tensor& q, Tensor& k, int pos, float theta);
 
 // 返回最大值的下标（greedy 采样常用）
 int ArgMax(const Tensor& x);

@@ -40,6 +40,7 @@ set(MINI_AI_CORE_SOURCES
     src/bpe_tokenizer.cc
     src/gguf_tokenizer.cc
     src/model.cc
+    src/loader.cc
     src/kv_cache.cc
     src/context.cc
     src/batch.cc
@@ -60,6 +61,7 @@ set(MINI_TEST_SOURCES
     tests/test_tokenizer.cc
     tests/test_kv_cache.cc
     tests/test_batch.cc
+    tests/test_forward.cc
     tests/test_radix_tree.cc
     tests/test_request_context.cc
     tests/test_chat.cc
@@ -93,6 +95,7 @@ if(MINI_AI_FETCH_GTEST)
         tests/gtest/test_tensor.cc
         tests/gtest/test_ops.cc
         tests/gtest/test_tokenizer.cc
+        tests/gtest/test_forward.cc
     )
     target_link_libraries(mini-ai-gtests PRIVATE GTest::gtest_main)
     set_target_properties(mini-ai-gtests PROPERTIES OUTPUT_NAME mini-ai-gtests)

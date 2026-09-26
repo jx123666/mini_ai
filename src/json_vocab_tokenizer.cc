@@ -75,6 +75,11 @@ int ParseJsonInt(const std::string& content, size_t& pos) {
 
 //解析JSON布尔值
 bool ParseJsonBool(const std::string& content, size_t& pos) {
+  //冒号后面可能有空格，比如 {"special": true}，先跳过空白
+  while (pos < content.size() &&
+         std::isspace(static_cast<unsigned char>(content[pos]))) {
+    ++pos;
+  }
   if (content.compare(pos, 4, "true") == 0) {
     pos += 4;//匹配到true，指针跳过这4个字符
     return true;
@@ -135,6 +140,11 @@ JsonVocabTokenizer::JsonVocabTokenizer(const std::string& vocab_path) {
         ++pos;
       }
       if (pos < content.size()) {
+        ++pos;//跳过冒号
+      }
+      //冒号后面的空格也要跳掉，不然 "special": true 会解析失败
+      while (pos < content.size() &&
+             std::isspace(static_cast<unsigned char>(content[pos]))) {
         ++pos;
       }
       if (key == "id") {

@@ -33,8 +33,24 @@ bool ParseJsonString(const std::string& s, size_t& pos, std::string& out) {
         out += '\n';
       } else if (esc == 't') {
         out += '\t';
+      } else if (esc == 'r') {
+        out += '\r';
       } else if (esc == '"' || esc == '\\' || esc == '/') {
         out += esc;
+      } else if (esc == 'u') {
+        //词表里常见 \u0120 这种写法，表示一个 Unicode 码点（空格常写成 Ġ）
+        //以前只收下了字面量 u0120，空格就对不上词表，会变成 unk
+        if (pos + 5 < s.size()) {
+          const std::string hex = s.substr(pos + 2, 4);
+          try {
+            const char32_t cp =
+                static_cast<char32_t>(std::stoul(hex, nullptr, 16));
+            out += CodepointToUtf8(cp);
+          } catch (...) {
+            out += '?';
+          }
+          pos += 4;//多跳过后面 4 位十六进制，下面再 +2 一共跳过 \uXXXX
+        }
       } else {
         out += esc;
       }

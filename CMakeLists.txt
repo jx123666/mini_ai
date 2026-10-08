@@ -1,17 +1,9 @@
-# =============================================================================
-# 文件作用：
-#   本项目的构建入口。对应学习任务「核心推理模块」中的：
-#   1) Tensor 与基础算子
-#   2) 单元测试（极简框架 + 可选 GoogleTest）
-#   3) Tokenizer（ASCII / JSON 词表 / BPE）
-#   4) KV Cache 与 Context（Batch / Forward / RadixTree / RequestContext）
-#
-# 用法：
-#   mkdir build && cd build
-#   cmake .. -DCMAKE_BUILD_TYPE=Release
-#   cmake --build . --config Release
-#   ctest -C Release --output-on-failure
-# =============================================================================
+#已完成：
+# Tensor 与基础算子
+#  单元测试（极简框架 + 可选 GoogleTest）
+#  Tokenizer（ASCII / JSON 词表 / BPE）
+#  KV Cache 与 Context（Batch / Forward / RadixTree / RequestContext）
+# Chat / PromptBuilder / Terminal（终端多轮对话）
 
 cmake_minimum_required(VERSION 3.17)
 project(mini_ai CXX)
@@ -28,9 +20,7 @@ endif()
 include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${CMAKE_SOURCE_DIR})
 
-# ---------------------------------------------------------------------------
-# 核心库源文件（Tensor + 算子 + Tokenizer + KV Cache / Context）
-# ---------------------------------------------------------------------------
+# 核心库源文件（Tensor + 算子 + Tokenizer + KV Cache / Context + Chat）
 set(MINI_AI_CORE_SOURCES
     src/tensor.cc
     src/ops.cc
@@ -48,11 +38,12 @@ set(MINI_AI_CORE_SOURCES
     src/radix_tree.cc
     src/request_context.cc
     src/chat.cc
+    src/prompt_builder.cc
+    src/terminal.cc
+    src/sampler.cc
 )
 
-# ---------------------------------------------------------------------------
-# 极简测试框架可执行文件（不依赖 GoogleTest，默认一定能编过）
-# ---------------------------------------------------------------------------
+# 极简测试框架可执行文件
 set(MINI_TEST_SOURCES
     ${MINI_AI_CORE_SOURCES}
     tests/test_main.cc
@@ -65,18 +56,20 @@ set(MINI_TEST_SOURCES
     tests/test_radix_tree.cc
     tests/test_request_context.cc
     tests/test_chat.cc
+    tests/test_sampler.cc
 )
 
 add_executable(mini-ai-tests ${MINI_TEST_SOURCES})
 set_target_properties(mini-ai-tests PROPERTIES OUTPUT_NAME mini-ai-tests)
 
+add_executable(mini-ai ${MINI_AI_CORE_SOURCES} src/main.cc)
+set_target_properties(mini-ai PROPERTIES OUTPUT_NAME mini-ai)
+
 enable_testing()
 add_test(NAME mini-ai-tests COMMAND mini-ai-tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
-# ---------------------------------------------------------------------------
 # GoogleTest（可选）：找不到依赖时跳过，不影响极简框架测试
 # 验收标准要求「能用 GoogleTest 和极简框架写测试」，因此这里两种都保留。
-# ---------------------------------------------------------------------------
 option(MINI_AI_FETCH_GTEST "Download GoogleTest via FetchContent" ON)
 
 if(MINI_AI_FETCH_GTEST)

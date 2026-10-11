@@ -1,3 +1,4 @@
+//模型结构和配置：Transformer 的层数、维度、各层权重张量
 #ifndef INCLUDE_MINI_LLAMA_MODEL_H_
 #define INCLUDE_MINI_LLAMA_MODEL_H_
 
@@ -21,7 +22,7 @@ struct ModelConfig {
   float rms_norm_eps = 1e-5f;
 };
 
-//一层Transformer的权重
+//一层 Transformer 的权重
 struct LayerWeights {
   Tensor attention_norm;
   Tensor wq;
@@ -45,7 +46,7 @@ struct MiniLlamaModel {
   Tensor lm_head;
 };
 
-//按config填充全0权重，方便测试链路形状
+//按 config 填全 0 权重，方便测形状链路
 MiniLlamaModel MakeToyModel(const ModelConfig& config);
 
 }

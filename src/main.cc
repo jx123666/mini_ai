@@ -1,6 +1,7 @@
 //命令行入口：
-//  generate加载tiny模型，按采样参数生成一段文字
-//  run终端多轮聊天（PromptBuilder + 流式输出）
+//  generate  加载 tiny 模型，按采样参数生成一段文字
+//  run       终端多轮聊天（PromptBuilder + 流式输出）
+//  inspect   只看 model.json 元数据
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -27,6 +28,7 @@ using mini_llama::ChatMessage;
 using mini_llama::ChatSession;
 using mini_llama::ForwardBatch;
 using mini_llama::InitTerminalUtf8;
+using mini_llama::InspectModel;
 using mini_llama::LoadModel;
 using mini_llama::MiniBatch;
 using mini_llama::MiniLlamaContext;
@@ -35,12 +37,14 @@ using mini_llama::MiniSampler;
 using mini_llama::PromptBuilder;
 using mini_llama::SamplingParams;
 using mini_llama::Terminal;
-//打印使用方法，包含generate和run的选项
+
+//打印使用方法，包含 generate / run / inspect
 static void PrintUsage(const char* argv0) {
   std::cout
       << "usage:\n"
       << "  " << argv0 << " generate [options]\n"
       << "  " << argv0 << " run [options]\n"
+      << "  " << argv0 << " inspect [config]\n"
       << "\n"
       << "generate options:\n"
       << "  --config <path>      model.json 路径（默认 models/tiny/model.json）\n"
@@ -58,7 +62,25 @@ static void PrintUsage(const char* argv0) {
       << "  --temperature <T>    温度，0 表示 greedy\n"
       << "  --top-k <k>          top-k，0 表示关闭\n"
       << "  --seed <S>           随机种子，0 表示不固定\n"
-      << "  --template <name>    聊天模板：plain（默认）或 qwen2\n";
+      << "  --template <name>    聊天模板：plain（默认）或 qwen2\n"
+      << "\n"
+      << "inspect:\n"
+      << "  只读 model.json，打印 config / tensor / tokenizer，不加载权重\n"
+      << "  默认 config: models/tiny/model.json\n";
+}
+
+//只看清单，不读 bin
+static int RunInspect(int argc, char** argv) {
+  std::string config_path = "models/tiny/model.json";
+  if (argc >= 3) {
+    if (std::strcmp(argv[2], "-h") == 0 ||
+        std::strcmp(argv[2], "--help") == 0) {
+      PrintUsage(argv[0]);
+      return 0;
+    }
+    config_path = argv[2];
+  }
+  return InspectModel(config_path) ? 0 : 1;
 }
 
 //解析浮点数参数
@@ -516,9 +538,12 @@ int main(int argc, char** argv) {
   if (std::strcmp(argv[1], "run") == 0) {
     return RunChat(argc, argv);
   }
+  if (std::strcmp(argv[1], "inspect") == 0) {
+    return RunInspect(argc, argv);
+  }
 
   std::cerr << "Unknown command: " << argv[1]
-            << "\nExpected: generate or run\n";
+            << "\nExpected: generate, run, or inspect\n";
   PrintUsage(argv[0]);
   return 1;
 }

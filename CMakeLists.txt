@@ -4,6 +4,7 @@
 #  Tokenizer（ASCII / JSON 词表 / BPE）
 #  KV Cache 与 Context（Batch / Forward / RadixTree / RequestContext）
 # Chat / PromptBuilder / Terminal（终端多轮对话）
+# 模型格式与 Loader（JSON+BIN / inspect / tensor 校验）
 
 cmake_minimum_required(VERSION 3.17)
 project(mini_ai CXX)
@@ -57,6 +58,7 @@ set(MINI_TEST_SOURCES
     tests/test_request_context.cc
     tests/test_chat.cc
     tests/test_sampler.cc
+    tests/test_loader.cc
 )
 
 add_executable(mini-ai-tests ${MINI_TEST_SOURCES})

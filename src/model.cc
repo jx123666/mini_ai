@@ -1,9 +1,10 @@
+//按 config 造一个全 0 的玩具模型，给测试链路用
 #include "mini_llama/model.h"
 
 namespace mini_llama {
 namespace {
 
-//按shape填充全0权重
+//按 shape 填全 0
 Tensor ZeroTensor(const std::vector<int>& shape) { return Tensor(shape, 0.0f); }
 
 }  

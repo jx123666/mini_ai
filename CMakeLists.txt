@@ -5,6 +5,7 @@
 #  KV Cache 与 Context（Batch / Forward / RadixTree / RequestContext）
 # Chat / PromptBuilder / Terminal（终端多轮对话）
 # 模型格式与 Loader（JSON+BIN / inspect / tensor 校验）
+# GGUF Reader（底层读取 + inspect-gguf）
 
 cmake_minimum_required(VERSION 3.17)
 project(mini_ai CXX)
@@ -32,6 +33,7 @@ set(MINI_AI_CORE_SOURCES
     src/gguf_tokenizer.cc
     src/model.cc
     src/loader.cc
+    src/gguf.cc
     src/kv_cache.cc
     src/context.cc
     src/batch.cc
@@ -59,6 +61,7 @@ set(MINI_TEST_SOURCES
     tests/test_chat.cc
     tests/test_sampler.cc
     tests/test_loader.cc
+    tests/test_gguf.cc
 )
 
 add_executable(mini-ai-tests ${MINI_TEST_SOURCES})

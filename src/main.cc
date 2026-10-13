@@ -1,7 +1,8 @@
 //命令行入口：
 //  generate  加载 tiny 模型，按采样参数生成一段文字
 //  run       终端多轮聊天（PromptBuilder + 流式输出）
-//  inspect   只看 model.json 元数据
+//  inspect       只看 model.json 元数据
+//  inspect-gguf  只看 GGUF 的 metadata / tensor 名字
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -17,6 +18,7 @@
 #include "mini_llama/chat.h"
 #include "mini_llama/context.h"
 #include "mini_llama/forward.h"
+#include "mini_llama/gguf.h"
 #include "mini_llama/loader.h"
 #include "mini_llama/prompt_builder.h"
 #include "mini_llama/sampler.h"
@@ -27,7 +29,9 @@ using mini_llama::AsciiTokenizer;
 using mini_llama::ChatMessage;
 using mini_llama::ChatSession;
 using mini_llama::ForwardBatch;
+using mini_llama::GgufReader;
 using mini_llama::InitTerminalUtf8;
+using mini_llama::InspectGguf;
 using mini_llama::InspectModel;
 using mini_llama::LoadModel;
 using mini_llama::MiniBatch;
@@ -38,13 +42,14 @@ using mini_llama::PromptBuilder;
 using mini_llama::SamplingParams;
 using mini_llama::Terminal;
 
-//打印使用方法，包含 generate / run / inspect
+//打印使用方法，包含 generate / run / inspect / inspect-gguf
 static void PrintUsage(const char* argv0) {
   std::cout
       << "usage:\n"
       << "  " << argv0 << " generate [options]\n"
       << "  " << argv0 << " run [options]\n"
       << "  " << argv0 << " inspect [config]\n"
+      << "  " << argv0 << " inspect-gguf <path>\n"
       << "\n"
       << "generate options:\n"
       << "  --config <path>      model.json 路径（默认 models/tiny/model.json）\n"
@@ -66,7 +71,10 @@ static void PrintUsage(const char* argv0) {
       << "\n"
       << "inspect:\n"
       << "  只读 model.json，打印 config / tensor / tokenizer，不加载权重\n"
-      << "  默认 config: models/tiny/model.json\n";
+      << "  默认 config: models/tiny/model.json\n"
+      << "\n"
+      << "inspect-gguf:\n"
+      << "  读 GGUF，打印 metadata 和 tensor 名字（不映射成模型）\n";
 }
 
 //只看清单，不读 bin
@@ -81,6 +89,25 @@ static int RunInspect(int argc, char** argv) {
     config_path = argv[2];
   }
   return InspectModel(config_path) ? 0 : 1;
+}
+
+//只解析 GGUF 结构并打印
+static int RunInspectGguf(int argc, char** argv) {
+  if (argc < 3) {
+    std::cerr << "Usage: " << argv[0] << " inspect-gguf <path>\n";
+    return 1;
+  }
+  if (std::strcmp(argv[2], "-h") == 0 || std::strcmp(argv[2], "--help") == 0) {
+    PrintUsage(argv[0]);
+    return 0;
+  }
+  GgufReader reader;
+  if (!reader.Load(argv[2])) {
+    std::cerr << "Failed to load GGUF: " << reader.load_error << "\n";
+    return 1;
+  }
+  InspectGguf(reader);
+  return 0;
 }
 
 //解析浮点数参数
@@ -541,9 +568,12 @@ int main(int argc, char** argv) {
   if (std::strcmp(argv[1], "inspect") == 0) {
     return RunInspect(argc, argv);
   }
+  if (std::strcmp(argv[1], "inspect-gguf") == 0) {
+    return RunInspectGguf(argc, argv);
+  }
 
   std::cerr << "Unknown command: " << argv[1]
-            << "\nExpected: generate, run, or inspect\n";
+            << "\nExpected: generate, run, inspect or inspect-gguf\n";
   PrintUsage(argv[0]);
   return 1;
 }

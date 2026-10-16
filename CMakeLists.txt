@@ -6,6 +6,8 @@
 # Chat / PromptBuilder / Terminal（终端多轮对话）
 # 模型格式与 Loader（JSON+BIN / inspect / tensor 校验）
 # GGUF Reader（底层读取 + inspect-gguf）
+# GGUF Loader（映射进 MiniLlamaModel）
+# GGUF Tokenizer（从 metadata 读 BPE 词表）
 
 cmake_minimum_required(VERSION 3.17)
 project(mini_ai CXX)
@@ -34,6 +36,7 @@ set(MINI_AI_CORE_SOURCES
     src/model.cc
     src/loader.cc
     src/gguf.cc
+    src/gguf_loader.cc
     src/kv_cache.cc
     src/context.cc
     src/batch.cc
@@ -62,6 +65,8 @@ set(MINI_TEST_SOURCES
     tests/test_sampler.cc
     tests/test_loader.cc
     tests/test_gguf.cc
+    tests/test_gguf_loader.cc
+    tests/test_gguf_tokenizer.cc
 )
 
 add_executable(mini-ai-tests ${MINI_TEST_SOURCES})
@@ -73,8 +78,7 @@ set_target_properties(mini-ai PROPERTIES OUTPUT_NAME mini-ai)
 enable_testing()
 add_test(NAME mini-ai-tests COMMAND mini-ai-tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
-# GoogleTest（可选）：找不到依赖时跳过，不影响极简框架测试
-# 验收标准要求「能用 GoogleTest 和极简框架写测试」，因此这里两种都保留。
+# GoogleTest：找不到依赖时跳过，不影响极简框架测试
 option(MINI_AI_FETCH_GTEST "Download GoogleTest via FetchContent" ON)
 
 if(MINI_AI_FETCH_GTEST)

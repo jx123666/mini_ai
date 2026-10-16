@@ -1,4 +1,5 @@
 //从vocab.json + merges.txt + special_tokens.json加载BPE分词器
+//这三份也可以由scripts/export_gguf_tokenizer.py从真实GGUF导出来
 //合并循环在bpe_common.h的ApplyBpeMerges里
 
 #include "mini_llama/tokenizer.h"

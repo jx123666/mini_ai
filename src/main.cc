@@ -3,6 +3,7 @@
 //  run       终端多轮聊天（PromptBuilder + 流式输出）
 //  inspect       只看 model.json 元数据
 //  inspect-gguf  只看 GGUF 的 metadata / tensor 名字
+//  tokenize-gguf 用GGUF里的BPE词表编码再解码
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -19,6 +20,7 @@
 #include "mini_llama/context.h"
 #include "mini_llama/forward.h"
 #include "mini_llama/gguf.h"
+#include "mini_llama/gguf_tokenizer.h"
 #include "mini_llama/loader.h"
 #include "mini_llama/prompt_builder.h"
 #include "mini_llama/sampler.h"
@@ -29,6 +31,7 @@ using mini_llama::AsciiTokenizer;
 using mini_llama::ChatMessage;
 using mini_llama::ChatSession;
 using mini_llama::ForwardBatch;
+using mini_llama::CreateGgufTokenizer;
 using mini_llama::GgufReader;
 using mini_llama::InitTerminalUtf8;
 using mini_llama::InspectGguf;
@@ -50,6 +53,7 @@ static void PrintUsage(const char* argv0) {
       << "  " << argv0 << " run [options]\n"
       << "  " << argv0 << " inspect [config]\n"
       << "  " << argv0 << " inspect-gguf <path>\n"
+      << "  " << argv0 << " tokenize-gguf <path> <text>\n"
       << "\n"
       << "generate options:\n"
       << "  --config <path>      model.json 路径（默认 models/tiny/model.json）\n"
@@ -74,7 +78,10 @@ static void PrintUsage(const char* argv0) {
       << "  默认 config: models/tiny/model.json\n"
       << "\n"
       << "inspect-gguf:\n"
-      << "  读 GGUF，打印 metadata 和 tensor 名字（不映射成模型）\n";
+      << "  读 GGUF，打印 metadata 和 tensor 名字（不映射成模型）\n"
+      << "\n"
+      << "tokenize-gguf:\n"
+      << "  用 GGUF 里的 BPE 词表编码文本，并解码回来核对\n";
 }
 
 //只看清单，不读 bin
@@ -107,6 +114,30 @@ static int RunInspectGguf(int argc, char** argv) {
     return 1;
   }
   InspectGguf(reader);
+  return 0;
+}
+
+//从GGUF读词表，打印id和roundtrip
+static int RunTokenizeGguf(int argc, char** argv) {
+  if (argc < 4) {
+    std::cerr << "Usage: " << argv[0] << " tokenize-gguf <path> <text>\n";
+    return 1;
+  }
+  auto tokenizer = CreateGgufTokenizer(argv[2]);
+  if (!tokenizer) {
+    std::cerr << "Failed to load GGUF tokenizer\n";
+    return 1;
+  }
+  const std::string text = argv[3];
+  const std::vector<int> ids = tokenizer->Encode(text);
+  std::cout << "bos=" << tokenizer->bos_id() << " eos=" << tokenizer->eos_id()
+            << " unk=" << tokenizer->unk_id() << "\n";
+  std::cout << "ids:";
+  for (int id : ids) {
+    std::cout << " " << id;
+  }
+  std::cout << "\n";
+  std::cout << "decode: " << tokenizer->Decode(ids) << "\n";
   return 0;
 }
 
@@ -571,9 +602,13 @@ int main(int argc, char** argv) {
   if (std::strcmp(argv[1], "inspect-gguf") == 0) {
     return RunInspectGguf(argc, argv);
   }
+  if (std::strcmp(argv[1], "tokenize-gguf") == 0) {
+    return RunTokenizeGguf(argc, argv);
+  }
 
   std::cerr << "Unknown command: " << argv[1]
-            << "\nExpected: generate, run, inspect or inspect-gguf\n";
+            << "\nExpected: generate, run, inspect, inspect-gguf or "
+               "tokenize-gguf\n";
   PrintUsage(argv[0]);
   return 1;
 }

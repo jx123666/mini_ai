@@ -21,7 +21,7 @@ const char* GgmlTypeName(uint32_t type);
 
 //GGUF metadata值类型
 enum GgufValueType : uint32_t {
-  kGgufTpeUint8 = 0,
+  kGgufTypeUint8 = 0,
   kGgufTypeInt8 = 1,
   kGgufTypeUint16 = 2,
   kGgufTypeInt16 = 3,

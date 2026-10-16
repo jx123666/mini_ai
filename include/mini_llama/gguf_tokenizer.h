@@ -1,19 +1,9 @@
-// =============================================================================
-// 文件作用：gguf_tokenizer.h
-//   GGUF 模型文件里已经打包了分词器。真实工程从这些字段读取：
-//     tokenizer.ggml.tokens       每个 id 对应的字符串片段
-//     tokenizer.ggml.merges       BPE 合并规则，如 "h e"
-//     tokenizer.ggml.token_type   哪些是特殊符号
-//     tokenizer.ggml.bos_token_id / eos_token_id
-//
-// 读出来之后，合并算法和 BpeTokenizer 完全一样。
-// 本学习版不解析 GGUF 二进制（那是后面「模型文件」的任务），
-// 用 LoadPieces() 直接喂入同一套词表和 merges，方便把合并逻辑测清楚。
-// =============================================================================
-
+//GGUF分词器：从文件metadata读tokens / merges / special id
+//合并算法和BpeTokenizer同一套，只是数据来源换成真实GGUF
 #ifndef INCLUDE_MINI_LLAMA_GGUF_TOKENIZER_H_
 #define INCLUDE_MINI_LLAMA_GGUF_TOKENIZER_H_
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -27,8 +17,11 @@ namespace mini_llama {
 
 class GgufTokenizer : public ITokenizer {
  public:
-  // 教学入口：词表、合并规则、特殊 id 已经从文件里取出来了。
-  // merges 每一项形如 "h e"，顺序就是优先级（越靠前越先合并）。
+  //从.gguf读tokenizer.ggml.*；缺词表返回false
+  bool Load(const std::string& gguf_path);
+
+  //测试入口：词表和merges已经拆出来了
+  //merges每一项形如"h e"，越靠前越先合并
   bool LoadPieces(const std::vector<std::string>& tokens,
                   const std::vector<std::string>& merges, int bos_id,
                   int eos_id, int unk_id);
@@ -48,18 +41,23 @@ class GgufTokenizer : public ITokenizer {
   std::unordered_map<std::string, int> vocab_;
   std::vector<std::string> id_to_token_;
   std::map<std::pair<std::string, std::string>, int> merge_ranks_;
+  //特殊串按长度从长到短，编码时优先整段吃掉
   std::vector<std::pair<std::string, int>> special_tokens_;
   std::vector<std::string> b2u_;
   std::unordered_map<std::string, uint8_t> u2b_;
   int bos_id_ = -1;
   int eos_id_ = -1;
   int unk_id_ = -1;
+
+  void ResetByteMap();
+  void IndexTokens(const std::vector<std::string>& tokens,
+                   const std::vector<int32_t>* token_types);
+  void IndexMerges(const std::vector<std::string>& merges);
 };
 
-// 完整 mini-llama 会打开 .gguf 并读 metadata。
-// 这里还没有 GGUF 解析器，所以这个工厂目前返回空指针。
+//打开gguf并读分词器；失败返回空指针
 std::unique_ptr<ITokenizer> CreateGgufTokenizer(const std::string& gguf_path);
 
-}  // namespace mini_llama
+}
 
-#endif  // INCLUDE_MINI_LLAMA_GGUF_TOKENIZER_H_
+#endif

@@ -48,6 +48,9 @@ class GgufTokenizer : public ITokenizer {
   int bos_id_ = -1;
   int eos_id_ = -1;
   int unk_id_ = -1;
+  std::string pre_tokenizer_;
+  bool add_bos_ = false;
+  bool add_eos_ = false;
 
   void ResetByteMap();
   void IndexTokens(const std::vector<std::string>& tokens,

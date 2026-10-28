@@ -6,10 +6,12 @@
 #include "mini_llama/model.h"
 
 namespace mini_llama {
+struct CudaContextState;
 
 struct MiniLlamaContext {
   const MiniLlamaModel* model = nullptr;
   KvCache kv_cache;
+  std::shared_ptr<CudaContextState> cuda;
   int pos = 0;//当前算到第几个位置
 
   //喂进去过的全部token

@@ -1,22 +1,10 @@
-// =============================================================================
-// 文件作用：ops.h
-//   声明大模型推理中最基础的一组算子（operator）。
-//
-// 本任务验收重点（必须能手写）：
-//   - Matmul   矩阵乘法
-//   - RmsNorm  均方根归一化（LLaMA 用它替代 LayerNorm）
-//   - Softmax  把分数变成概率分布
-//
-// 另外附带 Linear / SiLU 等常用算子，方便理解完整推理链路。
-//
-// 与 mini-llama 课程文档对应：
-//   include/mini_llama/ops.h  /  src/ops.cc
-// =============================================================================
+// CPU 浮点算子，输入形状不匹配时抛出异常。
 
 #ifndef INCLUDE_MINI_LLAMA_OPS_H_
 #define INCLUDE_MINI_LLAMA_OPS_H_
 
 #include "mini_llama/tensor.h"
+#include "mini_llama/model.h"
 
 namespace mini_llama {
 
@@ -65,7 +53,8 @@ Tensor SwiGlu(const Tensor& gate, const Tensor& up);
 
 // RoPE：给 Q/K 加上位置信息
 // q: [n_heads, head_dim]，k: [n_kv_heads, head_dim]，原地修改
-void Rope(Tensor& q, Tensor& k, int pos, float theta);
+void Rope(Tensor& q, Tensor& k, int pos, float theta,
+          RopeType type = RopeType::kNormal);
 
 // 返回最大值的下标（greedy 采样常用）
 int ArgMax(const Tensor& x);

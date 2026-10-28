@@ -1,5 +1,5 @@
 //JSON+BIN加载器：解析model.json，校验tensor，再按offset读model.bin
-//json是说明书，bin是零件箱；校验不过就不装机
+//json可以理解成说明书，bin是零件箱；检查不过就不装机
 #include "mini_llama/loader.h"
 
 #include <algorithm>
@@ -95,7 +95,7 @@ size_t FindOptionalValuePos(const std::string& content,
   return pos;
 }
 
-//解析必填整数，顺带检查后面不能再粘小数点
+//解析必填整数，顺带检查后面不能再有小数点
 int ParseIntKey(const std::string& content, const std::string& key) {
   size_t pos = FindValuePos(content, key);
   size_t parsed = 0;
@@ -112,7 +112,7 @@ int ParseIntKey(const std::string& content, const std::string& key) {
   return value;
 }
 
-//解析必填浮点
+//解析必填浮点数
 float ParseFloatKey(const std::string& content, const std::string& key) {
   size_t pos = FindValuePos(content, key);
   size_t parsed = 0;
@@ -267,7 +267,7 @@ size_t ParseSizeKeyNear(const std::string& content, size_t from,
   return static_cast<size_t>(value);
 }
 
-//config本身也要合理，不然后面推期望shape会乱
+//config本身也要合理，否则后面推期望shape会出错
 void ValidateConfig(const ModelConfig& config) {
   if (config.vocab_size <= 0 || config.dim <= 0 || config.hidden_dim <= 0 ||
       config.n_layers <= 0 || config.n_heads <= 0 || config.n_kv_heads <= 0 ||
@@ -294,7 +294,7 @@ void ValidateConfig(const ModelConfig& config) {
   }
 }
 
-//按shape算出float32该占多少字节，顺便防乘爆size_t
+//按shape算出float32该占多少字节，也防止乘爆size_t
 size_t CheckedTensorByteSize(const TensorInfo& info) {
   size_t num_elements = 1;
   for (int dim : info.shape) {
@@ -370,14 +370,14 @@ TokenizerInfo ParseTokenizerJson(const std::string& content) {
   tokenizer.eos_id = ParseOptionalInt(obj, "eos_id", tokenizer.eos_id);
   tokenizer.unk_id = ParseOptionalInt(obj, "unk_id", tokenizer.unk_id);
 
-  //教学清单只认这两种；bpe走别的接口
+  //只支持ascii和json_vocab
   if (tokenizer.type != "ascii" && tokenizer.type != "json_vocab") {
     throw std::runtime_error("unsupported tokenizer type: " + tokenizer.type);
   }
   if (tokenizer.bos_id < 0 || tokenizer.eos_id < 0 || tokenizer.unk_id < 0) {
     throw std::runtime_error("tokenizer special ids must be non-negative");
   }
-  //三个特殊id不能撞车
+  //三个特殊id不能相同
   if (tokenizer.bos_id == tokenizer.eos_id ||
       tokenizer.bos_id == tokenizer.unk_id ||
       tokenizer.eos_id == tokenizer.unk_id) {
@@ -389,7 +389,7 @@ TokenizerInfo ParseTokenizerJson(const std::string& content) {
   return tokenizer;
 }
 
-//校验整份清单：dtype、byte_size、重名、区间重叠、必填权重形状
+
 void ValidateManifest(const ModelManifest& manifest) {
   if (manifest.tensors.empty()) {
     throw std::runtime_error("model.json contains no tensors");
@@ -408,7 +408,7 @@ void ValidateManifest(const ModelManifest& manifest) {
     if (info.shape.empty()) {
       throw std::runtime_error("tensor shape must not be empty: " + info.name);
     }
-    //清单写的byte_size必须等于shape推出来的
+    //必须等于shape推出来的
     size_t expected_bytes = CheckedTensorByteSize(info);
     if (expected_bytes != info.byte_size) {
       throw std::runtime_error("tensor byte_size mismatch for " + info.name +
@@ -419,7 +419,7 @@ void ValidateManifest(const ModelManifest& manifest) {
     if (info.offset > std::numeric_limits<size_t>::max() - info.byte_size) {
       throw std::runtime_error("tensor offset overflow for " + info.name);
     }
-    //重名会盖掉另一块权重，直接拒
+    //重名会盖掉另一块权重，直接拒绝
     auto inserted = tensor_map.emplace(info.name, info);
     if (!inserted.second) {
       throw std::runtime_error("duplicate tensor name: " + info.name);
@@ -507,7 +507,12 @@ ModelManifest ParseManifest(const std::string& config_path) {
   c.max_seq_len = ParseIntKey(content, "max_seq_len");
   c.rope_theta = ParseFloatKey(content, "rope_theta");
   c.rms_norm_eps = ParseFloatKey(content, "rms_norm_eps");
-  c.head_dim = c.dim / c.n_heads;//tiny模型没单独写head_dim
+  c.head_dim = c.n_heads > 0 ? c.dim / c.n_heads : 0;
+  const std::string rope = ParseOptionalString(content, "rope_type", "normal");
+  if (rope != "normal" && rope != "neox") {
+    throw std::runtime_error("unsupported rope_type: " + rope);
+  }
+  c.rope_type = rope == "neox" ? RopeType::kNeoX : RopeType::kNormal;
   ValidateConfig(c);
 
   manifest.tokenizer = ParseTokenizerJson(content);
@@ -611,6 +616,13 @@ MiniLlamaModel LoadModel(const std::string& config_path,
       lw.wq = LoadByName(wf, tensor_map, prefix + "wq");
       lw.wk = LoadByName(wf, tensor_map, prefix + "wk");
       lw.wv = LoadByName(wf, tensor_map, prefix + "wv");
+      if (tensor_map.count(prefix + "bq")) lw.bq = LoadByName(wf, tensor_map, prefix + "bq");
+      if (tensor_map.count(prefix + "bk")) lw.bk = LoadByName(wf, tensor_map, prefix + "bk");
+      if (tensor_map.count(prefix + "bv")) lw.bv = LoadByName(wf, tensor_map, prefix + "bv");
+      if (!lw.bq.data.empty()) lw.bq.AssertShape({model.config.dim}, "bq");
+      const int kv_dim = model.config.n_kv_heads * model.config.head_dim;
+      if (!lw.bk.data.empty()) lw.bk.AssertShape({kv_dim}, "bk");
+      if (!lw.bv.data.empty()) lw.bv.AssertShape({kv_dim}, "bv");
       lw.wo = LoadByName(wf, tensor_map, prefix + "wo");
       lw.ffn_norm = LoadByName(wf, tensor_map, prefix + "ffn_norm");
       lw.w_gate = LoadByName(wf, tensor_map, prefix + "w_gate");
@@ -623,14 +635,14 @@ MiniLlamaModel LoadModel(const std::string& config_path,
     return LoadFailure(e.what());
   }
 
-  //bin不能多也不能少：末尾多出来的字节通常是写坏了
+  //bin不能多也不能少，末尾多出来的字节通常是写错
   wf.clear();
   wf.seekg(0, std::ios::end);
   std::streamoff file_size = wf.tellg();
   if (file_size < 0) {
     return LoadFailure("failed to determine weights file size");
   }
-  //期望长度 = 最靠后那块tensor的结尾
+  //期望长度，最靠后那块tensor的结尾
   size_t expected_end = 0;
   for (const auto& info : manifest.tensors) {
     size_t tensor_end = info.offset + info.byte_size;

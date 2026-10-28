@@ -1,25 +1,36 @@
 //命令行入口：
-//  generate  加载 tiny 模型，按采样参数生成一段文字
+//  generate  加载模型并生成文本
+//  bench     统计 prefill 和 decode 吞吐量
 //  run       终端多轮聊天（PromptBuilder + 流式输出）
 //  inspect       只看 model.json 元数据
 //  inspect-gguf  只看 GGUF 的 metadata / tensor 名字
 //  tokenize-gguf 用GGUF里的BPE词表编码再解码
 #include <algorithm>
 #include <chrono>
+#include <cerrno>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "mini_llama/batch.h"
+#include "mini_llama/runtime.h"
+#include "mini_llama/backend.h"
+#include "mini_llama/debug.h"
+#include "mini_llama/request_context.h"
+#include "mini_llama/matmul_dispatch.h"
 #include "mini_llama/chat.h"
 #include "mini_llama/context.h"
 #include "mini_llama/forward.h"
 #include "mini_llama/gguf.h"
+#include "mini_llama/gguf_loader.h"
 #include "mini_llama/gguf_tokenizer.h"
 #include "mini_llama/loader.h"
 #include "mini_llama/prompt_builder.h"
@@ -30,12 +41,16 @@
 using mini_llama::AsciiTokenizer;
 using mini_llama::ChatMessage;
 using mini_llama::ChatSession;
-using mini_llama::ForwardBatch;
+using mini_llama::CreateBpeTokenizer;
 using mini_llama::CreateGgufTokenizer;
+using mini_llama::ForwardBatch;
 using mini_llama::GgufReader;
+using mini_llama::ITokenizer;
 using mini_llama::InitTerminalUtf8;
 using mini_llama::InspectGguf;
 using mini_llama::InspectModel;
+using mini_llama::LoadChatTemplateFromGguf;
+using mini_llama::LoadGgufModel;
 using mini_llama::LoadModel;
 using mini_llama::MiniBatch;
 using mini_llama::MiniLlamaContext;
@@ -50,12 +65,13 @@ static void PrintUsage(const char* argv0) {
   std::cout
       << "usage:\n"
       << "  " << argv0 << " generate [options]\n"
-      << "  " << argv0 << " run [options]\n"
+      << "  " << argv0 << " bench [model_dir_or_gguf] [options]\n"
+      << "  " << argv0 << " run [model_dir_or_gguf] [options]\n"
       << "  " << argv0 << " inspect [config]\n"
       << "  " << argv0 << " inspect-gguf <path>\n"
       << "  " << argv0 << " tokenize-gguf <path> <text>\n"
       << "\n"
-      << "generate options:\n"
+      << "generate / bench options:\n"
       << "  --config <path>      model.json 路径（默认 models/tiny/model.json）\n"
       << "  --model <path>       model.bin 路径（默认 models/tiny/model.bin）\n"
       << "  -p <text>            提示词（默认 hello）\n"
@@ -63,7 +79,18 @@ static void PrintUsage(const char* argv0) {
       << "  --temperature <T>    温度，0 表示 greedy\n"
       << "  --top-k <k>          只在分数最高的 k 个里抽，0 表示关闭\n"
       << "  --seed <S>           随机种子，0 表示不固定\n"
+      << "  --threads <N>        CPU 线程数，0 自动选择\n"
+      << "  --matmul <mode>      naive/threaded/simd/threaded-simd\n"
+      << "  --quant <type>       q8_0/q4_0/q4_1\n"
+      << "  --dump-logits <dir>  保存各步 logits 和 token 序列\n"
+      << "  --tokenizer <path>   显式指定 JSON 词表\n"
+      << "  --verbose           输出位置和 logits top-5\n"
+      << "  --backend <name>     cpu/cuda\n"
+      << "  --device <N>         CUDA 设备编号\n"
       << "\n"
+      << "run:\n"
+      << "  位置参数可以是目录或 .gguf。目录里有 .gguf 且没有 model.json 时走真实模型。\n"
+      << "  例: " << argv0 << " run models/chat -n 32 --temperature 0.7\n"
       << "run options:\n"
       << "  --config <path>      model.json 路径（默认 models/tiny/model.json）\n"
       << "  --model <path>       model.bin 路径（默认 models/tiny/model.bin）\n"
@@ -71,7 +98,7 @@ static void PrintUsage(const char* argv0) {
       << "  --temperature <T>    温度，0 表示 greedy\n"
       << "  --top-k <k>          top-k，0 表示关闭\n"
       << "  --seed <S>           随机种子，0 表示不固定\n"
-      << "  --template <name>    聊天模板：plain（默认）或 qwen2\n"
+      << "  --template <name>    plain、qwen2，或一份带聊天模板的 .gguf\n"
       << "\n"
       << "inspect:\n"
       << "  只读 model.json，打印 config / tensor / tokenizer，不加载权重\n"
@@ -155,8 +182,9 @@ static bool ParseFloatArg(const char* text, float& out) {
 //解析整数参数，10进制
 static bool ParseIntArg(const char* text, int& out) {
   char* end = nullptr;
+  errno = 0;
   const long value = std::strtol(text, &end, 10);
-  if (end == text || *end != '\0' || value < 0 ||
+  if (errno == ERANGE || end == text || *end != '\0' || value < 0 ||
       value > static_cast<long>(std::numeric_limits<int>::max())) {
     return false;
   }
@@ -167,8 +195,10 @@ static bool ParseIntArg(const char* text, int& out) {
 //解析无符号整数参数
 static bool ParseUintArg(const char* text, unsigned int& out) {
   char* end = nullptr;
+  if (text[0] == '-') return false;
+  errno = 0;
   const unsigned long value = std::strtoul(text, &end, 10);
-  if (end == text || *end != '\0' ||
+  if (errno == ERANGE || end == text || *end != '\0' ||
       value > static_cast<unsigned long>(
                    std::numeric_limits<unsigned int>::max())) {
     return false;
@@ -188,122 +218,121 @@ static size_t CommonPrefixLength(const std::vector<int>& a,
   return i;
 }
 
-//运行generate命令
-static int RunGenerate(int argc, char** argv) {
-  std::string config_path = "models/tiny/model.json";//默认模型配置路径
-  std::string model_path = "models/tiny/model.bin";//默认模型权重路径
-  std::string prompt = "hello";
-  int n_predict = 16;//默认生成token数
-  float temperature = 0.0f;
-  int top_k = 0;//默认不启用top-k
-  unsigned int seed = 0;//默认不固定随机种子
-
-  //解析命令行参数
+// 生成和基准测试共用同一条推理路径，计时不包含终端输出。
+static int RunGenerate(int argc, char** argv, bool bench = false) {
+  std::string config_path = "models/tiny/model.json";
+  std::string model_path = "models/tiny/model.bin";
+  std::string prompt = "hello", dump_dir, tokenizer_path, quant, mode = "threaded-simd";
+  int n_predict = bench ? 64 : 16, threads = 0, device = 0;
+  std::string backend = "cpu";
+  bool verbose = false;
+  SamplingParams params;
   for (int i = 2; i < argc; ++i) {
-    //解析模型配置路径
-    if (std::strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
-      config_path = argv[++i];
-    } else if (std::strcmp(argv[i], "--model") == 0 && i + 1 < argc) {
-      model_path = argv[++i];
-    } else if (std::strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
-      prompt = argv[++i];
-    } else if (std::strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
-      if (!ParseIntArg(argv[++i], n_predict) || n_predict == 0) {
-        std::cerr << "Invalid -n value. Expected a positive integer.\n";
-        return 1;
-      }
-    } else if (std::strcmp(argv[i], "--temperature") == 0 && i + 1 < argc) {
-      if (!ParseFloatArg(argv[++i], temperature)) {
-        std::cerr
-            << "Invalid --temperature value. Expected a non-negative float.\n";
-        return 1;
-      }
-    } else if (std::strcmp(argv[i], "--top-k") == 0 && i + 1 < argc) {
-      if (!ParseIntArg(argv[++i], top_k)) {
-        std::cerr
-            << "Invalid --top-k value. Expected a non-negative integer.\n";
-        return 1;
-      }
-    } else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
-      if (!ParseUintArg(argv[++i], seed)) {
-        std::cerr << "Invalid --seed value. Expected a non-negative integer.\n";
-        return 1;
-      }
-    } else if (std::strcmp(argv[i], "-h") == 0 ||
-               std::strcmp(argv[i], "--help") == 0) {
-      PrintUsage(argv[0]);
-      return 0;
-    } else {
-      std::cerr << "Unknown option: " << argv[i] << "\n";
-      PrintUsage(argv[0]);
-      return 1;
-    }
+    const std::string arg = argv[i];
+    auto value = [&]() -> const char* {
+      if (i + 1 >= argc) throw std::runtime_error("missing value for " + arg);
+      return argv[++i];
+    };
+    if (arg == "--config") config_path = value();
+    else if (arg == "--model") model_path = value();
+    else if (arg == "-p" || arg == "--prompt") prompt = value();
+    else if (arg == "-n" || arg == "--n-predict") {
+      if (!ParseIntArg(value(), n_predict) || n_predict == 0) throw std::runtime_error("invalid token count");
+    } else if (arg == "--temperature") {
+      if (!ParseFloatArg(value(), params.temperature)) throw std::runtime_error("invalid temperature");
+    } else if (arg == "--top-k") {
+      if (!ParseIntArg(value(), params.top_k)) throw std::runtime_error("invalid top-k");
+    } else if (arg == "--seed") {
+      if (!ParseUintArg(value(), params.seed)) throw std::runtime_error("invalid seed");
+    } else if (arg == "--threads") {
+      if (!ParseIntArg(value(), threads) || threads > 256) throw std::runtime_error("invalid thread count");
+    } else if (arg == "--device") {
+      if (!ParseIntArg(value(), device)) throw std::runtime_error("invalid device id");
+    } else if (arg == "--backend") backend = value();
+    else if (arg == "--matmul") mode = value();
+    else if (arg == "--quant") quant = value();
+    else if (arg == "--dump-logits") dump_dir = value();
+    else if (arg == "--tokenizer") tokenizer_path = value();
+    else if (arg == "--verbose") verbose = true;
+    else if (arg == "-h" || arg == "--help") { PrintUsage(argv[0]); return 0; }
+    else if (bench && arg.front() != '-') model_path = arg;
+    else throw std::runtime_error("unknown option: " + arg);
   }
+  mini_llama::SetMatmulThreads(static_cast<unsigned>(threads));
+  using mini_llama::MatmulMode;
+  if (mode == "naive") mini_llama::SetDefaultMatmulMode(MatmulMode::kNaive);
+  else if (mode == "threaded") mini_llama::SetDefaultMatmulMode(MatmulMode::kThreaded);
+  else if (mode == "simd") mini_llama::SetDefaultMatmulMode(MatmulMode::kSimd);
+  else if (mode == "threaded-simd") mini_llama::SetDefaultMatmulMode(MatmulMode::kThreadedSimd);
+  else throw std::runtime_error("unknown matmul mode: " + mode);
 
-  //加载模型，tiny模型默认在models/tiny目录下
-  MiniLlamaModel model = LoadModel(config_path, model_path);
-  //判断模型是否加载成功
-  if (!model.loaded) {
-    std::cerr << "Failed to load model: " << model.load_error << "\n";
-    return 1;
+  auto request = mini_llama::StartRequest(bench ? "bench" : "generate", backend, model_path);
+  auto start = mini_llama::RequestClock::now();
+  auto loaded = mini_llama::LoadInferenceModel(model_path, config_path, tokenizer_path);
+  auto& model = loaded.model;
+  auto& tokenizer = *loaded.tokenizer;
+  if (!quant.empty()) {
+    if (quant == "q8_0") mini_llama::QuantizeModel(model, mini_llama::QuantType::kQ80);
+    else if (quant == "q4_0") mini_llama::QuantizeModel(model, mini_llama::QuantType::kQ40);
+    else if (quant == "q4_1") mini_llama::QuantizeModel(model, mini_llama::QuantType::kQ41);
+    else throw std::runtime_error("unsupported quantization: " + quant);
   }
-
-  //创建ASCII编码器
-  AsciiTokenizer tokenizer;
-  //编码提示词
-  std::vector<int> tokens = tokenizer.Encode(prompt);
-  //判断提示词是否编码成功
-  if (tokens.empty()) {
-    std::cerr << "Prompt produced no tokens.\n";
-    return 1;
-  }
-
-  SamplingParams sampling_params;
-  sampling_params.temperature = temperature;
-  sampling_params.top_k = top_k;
-  sampling_params.seed = seed;
-  MiniSampler sampler(sampling_params);
-
-  //创建上下文
+  if (backend == "cuda") mini_llama::EnableCuda(model, device);
+  else if (backend != "cpu") throw std::runtime_error("unknown backend: " + backend);
+  request.model_load_ms = mini_llama::ElapsedMs(start);
+  start = mini_llama::RequestClock::now();
+  const auto tokens = tokenizer.Encode(prompt);
+  request.tokenize_ms = mini_llama::ElapsedMs(start);
+  if (tokens.empty()) throw std::runtime_error("prompt produced no tokens");
+  if (tokens.size() > static_cast<size_t>(model.config.max_seq_len) ||
+      static_cast<size_t>(n_predict - 1) > static_cast<size_t>(model.config.max_seq_len) - tokens.size())
+    throw std::runtime_error("prompt and generation exceed context window");
+  request.prompt_tokens = request.prefill_tokens = static_cast<int>(tokens.size());
   MiniLlamaContext ctx(&model);
-  //打印采样参数
-  std::cout << "sampling: temperature=" << temperature << ", top_k=" << top_k
-            << ", seed=" << seed << "\n";
-  std::cout << "prompt: " << prompt << "\n";
-  std::cout << tokenizer.Decode(tokens);
-  //尝试生成文本
-  try {
-    //创建批量
-    MiniBatch prefill = MiniBatch::FromTokens(tokens, 0);
-    //前向传播
-    auto logits = ForwardBatch(ctx, model, prefill);
-    //采样下一个token
-    int next = sampler.Sample(logits, sampling_params);
-    //添加到tokens
-    tokens.push_back(next);
-    //打印token
-    std::cout << tokenizer.DecodeToken(next) << std::flush;
-
-    //生成剩余的token
-    for (int i = 1; i < n_predict; ++i) {
-      //判断是否到达EOS
-      if (next == tokenizer.eos_id()) {
-        break;
-      }
-      //创建批量
-      MiniBatch decode = MiniBatch::Single(next, ctx.pos + 1);
-      //前向传播
-      logits = ForwardBatch(ctx, model, decode);
-      next = sampler.Sample(logits, sampling_params);
-      tokens.push_back(next);
-      std::cout << tokenizer.DecodeToken(next) << std::flush;
+  MiniSampler sampler(params);
+  start = mini_llama::RequestClock::now();
+  auto logits = ForwardBatch(ctx, model, MiniBatch::FromTokens(tokens, 0));
+  request.prefill_ms = mini_llama::ElapsedMs(start);
+  std::vector<int> generated;
+  std::string streamed;
+  for (int step = 0; step < n_predict; ++step) {
+    mini_llama::DumpLogits(dump_dir, step, logits);
+    if (verbose) std::cout << "step=" << step << " pos=" << ctx.pos
+                           << " logits=" << mini_llama::FormatTopLogits(logits) << '\n';
+    start = mini_llama::RequestClock::now();
+    const int next = sampler.Sample(logits, params);
+    request.sample_ms += mini_llama::ElapsedMs(start);
+    generated.push_back(next);
+    if (!bench && next != tokenizer.eos_id()) {
+      // 按完整 token 序列解码，避免把跨 token 的 UTF-8 字节拆坏。
+      const std::string decoded = tokenizer.Decode(generated);
+      if (decoded.size() > streamed.size()) std::cout << decoded.substr(streamed.size()) << std::flush;
+      streamed = decoded;
     }
-  } catch (const std::exception& e) {
-    std::cerr << "\nError: " << e.what() << "\n";
-    return 1;
+    if (next == tokenizer.eos_id() || step + 1 == n_predict) break;
+    start = mini_llama::RequestClock::now();
+    logits = ForwardBatch(ctx, model, MiniBatch::Single(next, ctx.pos + 1));
+    request.decode_ms += mini_llama::ElapsedMs(start);
+    ++request.decode_tokens;
   }
-
-  std::cout << "\n";
+  request.generated_tokens = static_cast<int>(generated.size());
+  request.Finish();
+  if (!dump_dir.empty()) {
+    std::ofstream metadata(std::filesystem::path(dump_dir) / "tokens.json");
+    metadata << "{\"prompt\":[";
+    for (size_t i = 0; i < tokens.size(); ++i) metadata << (i ? "," : "") << tokens[i];
+    metadata << "],\"generated\":[";
+    for (size_t i = 0; i < generated.size(); ++i) metadata << (i ? "," : "") << generated[i];
+    metadata << "]}\n";
+    if (!metadata) throw std::runtime_error("failed to write token metadata");
+  }
+  std::cout << '\n' << mini_llama::FormatRequestTraceSummary(request) << '\n';
+  if (model.cuda) std::cout << mini_llama::CudaStats(model, ctx) << '\n';
+  if (bench) std::cout << "prefill_tokens_per_second="
+      << mini_llama::TokensPerSecond(request.prefill_tokens, request.prefill_ms)
+      << " decode_tokens_per_second="
+      << mini_llama::TokensPerSecond(request.decode_tokens, request.decode_ms)
+      << " threads=" << mini_llama::MatmulThreads() << " matmul=" << mode << '\n';
   return 0;
 }
 
@@ -318,20 +347,35 @@ static int RunChat(int argc, char** argv) {
 
   std::string config_path = "models/tiny/model.json";
   std::string model_path = "models/tiny/model.bin";
+  std::string gguf_path;
+  std::string model_source;
   float temperature = 0.0f;
   int top_k = 0;
   unsigned int seed = 0;
   int max_response_tokens = 64;
   std::string chat_template;//空 = plain
+  bool template_set = false;
+  bool model_flag = false;
+  int threads = 0;
+  std::string quant, tokenizer_path, backend = "cpu";
+  int device = 0;
 
-  //解析命令行参数，从第3个参数开始
-  for (int i = 2; i < argc; ++i) {
+  //run models/chat：第一个不是选项的参数是模型目录或 gguf 文件
+  int arg_begin = 2;
+  if (argc >= 3 && argv[2][0] != '-') {
+    model_source = argv[2];
+    arg_begin = 3;
+  }
+
+  //解析命令行参数
+  for (int i = arg_begin; i < argc; ++i) {
     //解析模型配置路径
     if (std::strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
       config_path = argv[++i];
     } else if (std::strcmp(argv[i], "--model") == 0 && i + 1 < argc) {
-      //解析模型权重路径
+      //解析模型权重路径；显式指定后不再走目录里的 gguf
       model_path = argv[++i];
+      model_flag = true;
     } else if ((std::strcmp(argv[i], "-n") == 0 ||
                 std::strcmp(argv[i], "--n-predict") == 0) &&
                i + 1 < argc) {
@@ -362,17 +406,29 @@ static int RunChat(int argc, char** argv) {
         std::cerr << "Invalid --seed value. Expected a non-negative integer.\n";
         return 1;
       }
+    } else if (std::strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
+      if (!ParseIntArg(argv[++i], threads) || threads > 256) throw std::runtime_error("invalid thread count");
+    } else if (std::strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
+      backend = argv[++i];
+    } else if (std::strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
+      if (!ParseIntArg(argv[++i], device)) throw std::runtime_error("invalid device id");
+    } else if (std::strcmp(argv[i], "--quant") == 0 && i + 1 < argc) {
+      quant = argv[++i];
+    } else if (std::strcmp(argv[i], "--tokenizer") == 0 && i + 1 < argc) {
+      tokenizer_path = argv[++i];
     } else if (std::strcmp(argv[i], "--template") == 0 && i + 1 < argc) {
       //解析聊天模板，默认plain
       chat_template = argv[++i];
-      //判断聊天模板是否有效，只能是plain或qwen2
-      if (chat_template != "plain" && chat_template != "qwen2") {
-        std::cerr << "Invalid --template. Expected plain or qwen2.\n";
-        return 1;
-      }
-      //如果聊天模板是plain，清空
+      template_set = true;
+      //plain清空；.gguf则读出里面的tokenizer.chat_template
       if (chat_template == "plain") {
         chat_template.clear();
+      } else if (chat_template.size() >= 5 &&
+                 chat_template.substr(chat_template.size() - 5) == ".gguf") {
+        chat_template = LoadChatTemplateFromGguf(chat_template);
+      } else if (chat_template != "qwen2") {
+        std::cerr << "Invalid --template. Expected plain, qwen2, or a .gguf path.\n";
+        return 1;
       }
     } else if (std::strcmp(argv[i], "-h") == 0 ||
                std::strcmp(argv[i], "--help") == 0) {
@@ -386,16 +442,22 @@ static int RunChat(int argc, char** argv) {
     }
   }
 
-  //加载模型
-  MiniLlamaModel model = LoadModel(config_path, model_path);
-  //如果失败，打印错误信息
-  if (!model.loaded) {
-    std::cerr << "Failed to load model: " << model.load_error << "\n";
-    return 1;
+  const std::string source = !model_flag && !model_source.empty() ? model_source : model_path;
+  mini_llama::SetMatmulThreads(static_cast<unsigned>(threads));
+  auto loaded = mini_llama::LoadInferenceModel(source, config_path, tokenizer_path);
+  auto& model = loaded.model;
+  ITokenizer& tokenizer = *loaded.tokenizer;
+  if (!template_set) chat_template = loaded.chat_template;
+  if (std::filesystem::path(loaded.source).extension() == ".gguf") gguf_path = loaded.source;
+  if (!quant.empty()) {
+    if (quant == "q8_0") mini_llama::QuantizeModel(model, mini_llama::QuantType::kQ80);
+    else if (quant == "q4_0") mini_llama::QuantizeModel(model, mini_llama::QuantType::kQ40);
+    else if (quant == "q4_1") mini_llama::QuantizeModel(model, mini_llama::QuantType::kQ41);
+    else throw std::runtime_error("unsupported quantization: " + quant);
   }
 
-  //创建ASCII编码器
-  AsciiTokenizer tokenizer;
+  if (backend == "cuda") mini_llama::EnableCuda(model, device);
+  else if (backend != "cpu") throw std::runtime_error("unknown backend: " + backend);
   //创建提示构建器
   PromptBuilder builder;
   //如果聊天模板有效，设置聊天模板
@@ -417,11 +479,14 @@ static int RunChat(int argc, char** argv) {
   }
   //打印聊天信息
   term.PrintMessage("mini-ai chat");
+  if (!gguf_path.empty()) {
+    term.PrintMessage("GGUF: " + gguf_path);
+  }
   term.PrintMessage("Type /help for commands, /exit to quit.\n");
   //测试模型，如果上下文窗口小于等于256，打印提示信息
   if (model.config.max_seq_len <= 256) {
     term.PrintMessage(
-        "Tiny teaching model: random weights, small context window.");
+        "Small model: generation is limited by its context window.");
     term.PrintMessage("This is a smoke-test chat loop, not a real LLM demo.\n");
   }
 
@@ -454,6 +519,7 @@ static int RunChat(int argc, char** argv) {
     }
     if (input == "/stats") {
       term.PrintStats(session);
+      if (model.cuda) term.PrintMessage(mini_llama::CudaStats(model, ctx));
       continue;
     }
     if (input == "/params") {
@@ -474,6 +540,10 @@ static int RunChat(int argc, char** argv) {
 
     std::string prompt_text = builder.Build(candidate_messages);
     std::vector<int> tokens = tokenizer.Encode(prompt_text);
+    if (tokens.empty()) {
+      term.PrintMessage("Error: prompt produced no tokens.\n");
+      continue;
+    }
 
     if (tokens.size() >= static_cast<size_t>(model.config.max_seq_len)) {
       term.PrintMessage(
@@ -581,7 +651,7 @@ static int RunChat(int argc, char** argv) {
   return 0;
 }
 
-int main(int argc, char** argv) {
+static int RunMain(int argc, char** argv) {
   InitTerminalUtf8();
 
   if (argc < 2 || std::strcmp(argv[1], "help") == 0 ||
@@ -590,6 +660,8 @@ int main(int argc, char** argv) {
     return 0;
   }
 
+  if (std::strcmp(argv[1], "--cuda-info") == 0) { std::cout << mini_llama::CudaDeviceInfo() << '\n'; return 0; }
+  if (std::strcmp(argv[1], "bench") == 0) return RunGenerate(argc, argv, true);
   if (std::strcmp(argv[1], "generate") == 0) {//运行generate命令
     return RunGenerate(argc, argv);
   }
@@ -611,4 +683,12 @@ int main(int argc, char** argv) {
                "tokenize-gguf\n";
   PrintUsage(argv[0]);
   return 1;
+}
+
+int main(int argc, char** argv) {
+  try { return RunMain(argc, argv); }
+  catch (const std::exception& e) {
+    std::cerr << "Error: " << e.what() << '\n';
+    return 1;
+  }
 }

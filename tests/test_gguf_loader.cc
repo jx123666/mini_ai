@@ -144,8 +144,36 @@ static bool TestGgufLoaderRejectsIncompleteConfig() {
 }
 
 //启动时把这组测试登记进极简框架
+static bool TestQwenBiasRoundtrip() {
+  auto source = mini_llama::LoadModel("models/tiny/model.json", "models/tiny/model.bin");
+  source.config.rope_type = mini_llama::RopeType::kNeoX;
+  for (auto& layer : source.layers) {
+    layer.bq = mini_llama::Tensor({source.config.dim}, 0.125f);
+    const int kv_dim = source.config.n_kv_heads * source.config.head_dim;
+    layer.bk = mini_llama::Tensor({kv_dim}, -0.25f);
+    layer.bv = mini_llama::Tensor({kv_dim}, 0.5f);
+  }
+  const auto path = mini_llama::test::WriteModelGgufFixture("qwen_bias.gguf", source, "qwen2");
+  const auto loaded = LoadGgufModel(path.string());
+  std::filesystem::remove(path);
+  MINI_LLAMA_ASSERT_TRUE(loaded.loaded);
+  MINI_LLAMA_ASSERT_TRUE(loaded.config.rope_type == mini_llama::RopeType::kNeoX);
+  MINI_LLAMA_ASSERT_NEAR(loaded.layers[0].bq[0], 0.125f, 1e-7f);
+  MiniLlamaContext a(&source), b(&loaded);
+  for (int pos = 0; pos < 3; ++pos) {
+    a.pos = b.pos = pos;
+    const auto expected = mini_llama::ForwardToken(a, source, 65 + pos);
+    const auto actual = mini_llama::ForwardToken(b, loaded, 65 + pos);
+    for (size_t i = 0; i < expected.size(); ++i) {
+      MINI_LLAMA_ASSERT_NEAR(actual[i], expected[i], 1e-6f);
+    }
+  }
+  return true;
+}
+
 static struct GgufLoaderTestRegistrar {
   GgufLoaderTestRegistrar() {
+    RegisterTest("qwen_bias_and_rope_roundtrip", TestQwenBiasRoundtrip);
     RegisterTest("gguf_loader_loads_tiny_fixture",
                  TestGgufLoaderLoadsTinyFixture);
     RegisterTest("gguf_loader_fixture_enters_forward_path",

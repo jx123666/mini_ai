@@ -9,6 +9,9 @@
 
 namespace mini_llama {
 
+enum class RopeType { kNormal, kNeoX };
+struct CudaModelState;
+
 struct ModelConfig {
   int vocab_size = 128;
   int dim = 32;
@@ -20,6 +23,7 @@ struct ModelConfig {
   int max_seq_len = 128;
   float rope_theta = 10000.0f;
   float rms_norm_eps = 1e-5f;
+  RopeType rope_type = RopeType::kNormal;
 };
 
 //一层 Transformer 的权重
@@ -28,6 +32,10 @@ struct LayerWeights {
   Tensor wq;
   Tensor wk;
   Tensor wv;
+  // 没有偏置的模型保留空张量。
+  Tensor bq;
+  Tensor bk;
+  Tensor bv;
   Tensor wo;
   Tensor ffn_norm;
   Tensor w_gate;
@@ -39,6 +47,7 @@ struct MiniLlamaModel {
   ModelConfig config;
   bool loaded = false;
   std::string load_error;
+  std::shared_ptr<CudaModelState> cuda;
 
   Tensor token_embedding;
   std::vector<LayerWeights> layers;

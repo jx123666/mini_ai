@@ -51,6 +51,7 @@ size_t CheckedNumel(const std::vector<int>& shape, const char* caller) {
 
 
 void CheckRank(const Tensor& t, int expected, const char* caller) {
+  if (t.quantized) throw std::runtime_error("dequantize tensor before accessing F32 elements");
   //如果tensor的维度不等于预期的维度，异常
   if (t.num_dims() != expected) {
     throw std::runtime_error(std::string(caller) + " expected " +
@@ -84,6 +85,7 @@ Tensor::Tensor(const std::vector<int>& input_shape, float fill)
 //输入indices的形状为indices.size()
 //输入调用者为caller
 size_t Tensor::FlatIndex(const std::vector<int>& indices) const {
+  if (quantized) throw std::runtime_error("dequantize tensor before accessing F32 elements");
   if (indices.size() != shape.size()) {
     throw std::runtime_error("Tensor::FlatIndex expected " +
                              std::to_string(shape.size()) +

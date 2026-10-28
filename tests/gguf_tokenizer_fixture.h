@@ -81,9 +81,21 @@ inline void TokAppendI32Array(std::vector<char>& data, const std::string& key,
   }
 }
 
+//Qwen2聊天模板的缩小版：没system就补默认，最后留assistant前缀
+inline std::string TinyQwen2Template() {
+  return "{% for message in messages %}{% if loop.first and "
+         "messages[0]['role'] != 'system' %}{{ '<|im_start|>system\nYou are a "
+         "helpful assistant.<|im_end|>\n' }}{% endif %}{{'<|im_start|>' + "
+         "message['role'] + '\n' + message['content'] + '<|im_end|>' + "
+         "'\n'}}{% endfor %}{% if add_generation_prompt %}{{ "
+         "'<|im_start|>assistant\n' }}{% endif %}";
+}
+
 //词表里 a+b 能合成 ab；<|im_start|> 标成control(type=3)
+//include_chat_template为false时用来测“没有模板就看架构”
 inline std::filesystem::path WriteTinyGgufTokenizerFixture(
-    const std::string& name) {
+    const std::string& name, const std::string& architecture = "qwen2",
+    bool include_chat_template = true) {
   //0/1/2是普通片段，后面四个type=3是special，编码时整段吃掉
   const std::vector<std::string> tokens = {
       "a", "b", "ab", "<s>", "</s>", "<|im_start|>", "<|im_end|>",
@@ -91,14 +103,15 @@ inline std::filesystem::path WriteTinyGgufTokenizerFixture(
   const std::vector<int32_t> token_types = {1, 1, 1, 3, 3, 3, 3};
   const std::vector<std::string> merges = {"a b"};
 
-  //Header：magic + v3 + 0个tensor + 8条metadata
+  const uint64_t metadata_count = include_chat_template ? 9 : 8;
+  //Header：magic + v3 + 0个tensor + metadata条数
   std::vector<char> data;
   data.insert(data.end(), {'G', 'G', 'U', 'F'});
   TokAppendU32Le(data, 3);
   TokAppendU64Le(data, 0);  //没有tensor
-  TokAppendU64Le(data, 8);  //8条metadata
+  TokAppendU64Le(data, metadata_count);
 
-  TokAppendMetadataString(data, "general.architecture", "qwen2");
+  TokAppendMetadataString(data, "general.architecture", architecture);
   TokAppendMetadataString(data, "general.name", "tiny-tokenizer-test");
   TokAppendMetadataU32(data, "general.alignment", 32);
   TokAppendStringArray(data, "tokenizer.ggml.tokens", tokens);
@@ -106,6 +119,9 @@ inline std::filesystem::path WriteTinyGgufTokenizerFixture(
   TokAppendStringArray(data, "tokenizer.ggml.merges", merges);
   TokAppendMetadataU32(data, "tokenizer.ggml.bos_token_id", 3);
   TokAppendMetadataU32(data, "tokenizer.ggml.eos_token_id", 4);
+  if (include_chat_template) {
+    TokAppendMetadataString(data, "tokenizer.chat_template", TinyQwen2Template());
+  }
 
   //对齐到32，这份文件没有权重，padding后面就结束
   size_t padding = (32 - (data.size() % 32)) % 32;

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "mini_llama/ops.h"
+#include "mini_llama/backend.h"
 
 namespace mini_llama {
 namespace {
@@ -15,6 +16,11 @@ void ValidateForwardInputs(const MiniLlamaContext& ctx,
   const ModelConfig& c = model.config;
   if (!model.loaded) {
     throw std::runtime_error("ForwardToken called with an unloaded model");
+  }
+  if (c.n_heads <= 0 || c.n_kv_heads <= 0 || c.head_dim <= 0 ||
+      c.n_heads % c.n_kv_heads != 0 || c.head_dim % 2 != 0 ||
+      c.dim != c.n_heads * c.head_dim) {
+    throw std::runtime_error("ForwardToken invalid attention dimensions");
   }
   if (token < 0 || token >= c.vocab_size) {
     throw std::out_of_range("ForwardToken token id out of range");
@@ -45,6 +51,15 @@ Tensor EmbedToken(const MiniLlamaModel& model, int token_id) {
 //GQA：几个 query head共用一个kv head
 int MapQHeadToKvHead(int q_head, int n_heads, int n_kv_heads) {
   return q_head / (n_heads / n_kv_heads);
+}
+
+Tensor ProjectQkv(const Tensor& x, const Tensor& weight, const Tensor& bias) {
+  Tensor y = Linear(x, weight);
+  if (!bias.data.empty()) {
+    bias.AssertShape(y.shape, "QKV bias");
+    y = ElementwiseAdd(y, bias);
+  }
+  return y;
 }
 
 //attention:写当前K/V进 cache，再拿历史算加权和
@@ -108,11 +123,11 @@ Tensor ForwardLayer(MiniLlamaContext& ctx, const MiniLlamaModel& model,
   Tensor h = RmsNorm(x, lw.attention_norm, c.rms_norm_eps);
 
   //qkv投影，再拆成多头
-  Tensor q = Linear(h, lw.wq).ReshapeChecked({n_heads, head_dim}, "q");
-  Tensor k = Linear(h, lw.wk).ReshapeChecked({n_kv_heads, head_dim}, "k");
-  Tensor v = Linear(h, lw.wv).ReshapeChecked({n_kv_heads, head_dim}, "v");
+  Tensor q = ProjectQkv(h, lw.wq, lw.bq).ReshapeChecked({n_heads, head_dim}, "q");
+  Tensor k = ProjectQkv(h, lw.wk, lw.bk).ReshapeChecked({n_kv_heads, head_dim}, "k");
+  Tensor v = ProjectQkv(h, lw.wv, lw.bv).ReshapeChecked({n_kv_heads, head_dim}, "v");
 
-  Rope(q, k, pos, c.rope_theta);
+  Rope(q, k, pos, c.rope_theta, c.rope_type);
 
   Tensor attn_out =
       AttentionForward(q, k, v, pos, layer, ctx.kv_cache, n_heads, n_kv_heads,
@@ -142,6 +157,7 @@ Tensor ComputeLogits(const Tensor& x, const MiniLlamaModel& model) {
 Tensor ForwardToken(MiniLlamaContext& ctx, const MiniLlamaModel& model,
                     int token) {
   ValidateForwardInputs(ctx, model, token);
+  if (model.cuda) return ForwardCuda(ctx, model, token);
 
   //embed
   Tensor x = EmbedToken(model, token);

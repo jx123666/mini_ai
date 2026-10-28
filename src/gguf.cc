@@ -707,6 +707,16 @@ std::vector<uint8_t> ReadGgufTensorRaw(const std::string& path,
 //会重新打开文件扫metadata，不用先Load整份
 
 //读整数类metadata（uint8/int32/uint64等都收成int64）
+bool GgufGetMetadataBool(const std::string& path, const std::string& key, bool& out) {
+  std::ifstream file;
+  uint32_t type = 0;
+  if (!OpenAndFindMetadataKey(file, path, key, type) || type != kGgufTypeBool) return false;
+  uint8_t value = 0;
+  if (!ReadLe(file, value) || value > 1) return false;
+  out = value != 0;
+  return true;
+}
+
 bool GgufGetMetadataInt(const std::string& path, const std::string& key,
                         int64_t& out) {
   std::ifstream f;

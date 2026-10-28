@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "src/pretokenizer.h"
 
 namespace mini_llama {
 //将Unicode码点转换为UTF-8编码
@@ -125,7 +126,8 @@ inline std::vector<int> EncodeWithBpe(
     const std::string& text, const std::vector<std::string>& b2u,
     const std::unordered_map<std::string, int>& vocab,
     const std::map<std::pair<std::string, std::string>, int>& ranks,
-    const std::vector<std::pair<std::string, int>>& specials, int unk_id) {
+    const std::vector<std::pair<std::string, int>>& specials, int unk_id,
+    const std::string& pre_tokenizer = "") {
   if (text.empty()) {
     return {};
   }
@@ -159,9 +161,10 @@ inline std::vector<int> EncodeWithBpe(
     const std::string segment = text.substr(pos, end - pos);
     pos = end;
 
+   for (const auto& part : SplitPreTokens(segment, pre_tokenizer)) {
     std::vector<std::string> pieces;
     pieces.reserve(segment.size());
-    for (unsigned char c : segment) {
+    for (unsigned char c : part) {
       pieces.push_back(b2u[c]);
     }
     pieces = ApplyBpeMerges(std::move(pieces), ranks);
@@ -174,6 +177,7 @@ inline std::vector<int> EncodeWithBpe(
         result.push_back(unk_id);
       }
     }
+   }
   }
   return result;
 }

@@ -141,7 +141,7 @@ Tensor SwiGlu(const Tensor& gate, const Tensor& up) {
 }
 
 //对每个 head 做标准 RoPE：相邻两维 (x0,x1) 旋转一下
-void ApplyRopeNormalToHeads(Tensor& x, int pos, float theta) {
+void ApplyRopeNormalToHeads(Tensor& x, int pos, float theta, RopeType type) {
   const int n_heads = x.shape[0];
   const int head_dim = x.shape[1];
   for (int h = 0; h < n_heads; ++h) {
@@ -151,16 +151,19 @@ void ApplyRopeNormalToHeads(Tensor& x, int pos, float theta) {
                                      static_cast<float>(head_dim));
       const float cos_val = std::cos(static_cast<float>(pos) * freq);
       const float sin_val = std::sin(static_cast<float>(pos) * freq);
-      const float x0 = x.data[h * head_dim + i];
-      const float x1 = x.data[h * head_dim + i + 1];
-      x.data[h * head_dim + i] = x0 * cos_val - x1 * sin_val;
-      x.data[h * head_dim + i + 1] = x0 * sin_val + x1 * cos_val;
+        // NeoX 将前后半段配对，普通布局则使用相邻两维。
+        const int a = type == RopeType::kNeoX ? i / 2 : i;
+        const int b = type == RopeType::kNeoX ? a + head_dim / 2 : i + 1;
+        const float x0 = x.data[h * head_dim + a];
+        const float x1 = x.data[h * head_dim + b];
+        x.data[h * head_dim + a] = x0 * cos_val - x1 * sin_val;
+        x.data[h * head_dim + b] = x0 * sin_val + x1 * cos_val;
     }
   }
 }
 
 //RoPE：给 Q、K 写入位置信息，Attention 才能区分前后
-void Rope(Tensor& q, Tensor& k, int pos, float theta) {
+void Rope(Tensor& q, Tensor& k, int pos, float theta, RopeType type) {
   if (q.num_dims() != 2 || k.num_dims() != 2) {
     throw std::runtime_error("Rope: expected 2D tensors");
   }
@@ -176,8 +179,8 @@ void Rope(Tensor& q, Tensor& k, int pos, float theta) {
   if (q.shape[1] <= 0 || q.shape[1] % 2 != 0) {
     throw std::runtime_error("Rope: head_dim must be positive and even");
   }
-  ApplyRopeNormalToHeads(q, pos, theta);
-  ApplyRopeNormalToHeads(k, pos, theta);
+  ApplyRopeNormalToHeads(q, pos, theta, type);
+  ApplyRopeNormalToHeads(k, pos, theta, type);
 }
 
 //ArgMax：找最大值下标，greedy 采样用

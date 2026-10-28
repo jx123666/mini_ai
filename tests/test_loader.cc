@@ -133,7 +133,7 @@ static bool TestLoaderManifestDefaultsAsciiWithoutTokenizerBlock() {
   return true;
 }
 
-//教学清单只认 ascii / json_vocab
+// JSON manifest 目前只接受 ascii 和 json_vocab。
 static bool TestLoaderRejectsInvalidTokenizerType() {
   std::string json = ReadTextFile("models/tiny/model.json");
   std::string with_tokenizer = ReplaceTokenizerType(json, "bpe");

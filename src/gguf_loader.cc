@@ -1,8 +1,9 @@
 //GGUF映射加载：metadata填ModelConfig，张量名映射后读进MiniLlamaModel
-//本项目权重统一用F32 Tensor；量化格式在加载时反量化
+//线性层保留量化块，embedding 和归一化权重解码为 F32。
 #include "mini_llama/gguf_loader.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -53,7 +54,7 @@ MiniLlamaModel LoadFailure(const std::string& message) {
   return model;
 }
 
-//IEEE754 half -> float，量化块里的scale要用这个函数
+  //IEEE754 half -> float，量化块里的scale要用这个函数
 float Fp16ToFloat(uint16_t value) {
   uint32_t sign = static_cast<uint32_t>(value & 0x8000u) << 16;
   uint32_t exponent = (value >> 10) & 0x1fu;
@@ -131,7 +132,10 @@ std::string MapTensorName(const std::string& gguf_name) {
   std::string op = gguf_name.substr(dot1 + 1, dot2 - dot1 - 1);
   std::string suffix = gguf_name.substr(dot2 + 1);
   if (suffix == "bias") {
-    return "";
+    if (op == "attn_q") return "layers." + layer_str + ".bq";
+    if (op == "attn_k") return "layers." + layer_str + ".bk";
+    if (op == "attn_v") return "layers." + layer_str + ".bv";
+    throw std::runtime_error("unsupported bias tensor: " + gguf_name);
   }
   if (suffix != "weight") {
     return "";
@@ -165,6 +169,10 @@ std::string MapTensorName(const std::string& gguf_name) {
 //GGUF二维权重常写成[ne0=in, ne1=out]，内存已是out行×in列
 //我们的Tensor要[out, in]，所以两维时对调
 std::vector<int> MapShape(const std::vector<uint64_t>& gguf_shape) {
+  for (uint64_t dim : gguf_shape) {
+    if (dim == 0 || dim > static_cast<uint64_t>(std::numeric_limits<int>::max()))
+      throw std::runtime_error("GGUF tensor dimension out of range");
+  }
   std::vector<int> shape;
   shape.reserve(gguf_shape.size());
   if (gguf_shape.size() == 2) {
@@ -371,6 +379,9 @@ void ValidateLoadedShapes(const MiniLlamaModel& model) {
     RequireShape(lw.wq, {q_dim, c.dim}, prefix + "wq");
     RequireShape(lw.wk, {kv_dim, c.dim}, prefix + "wk");
     RequireShape(lw.wv, {kv_dim, c.dim}, prefix + "wv");
+    if (!lw.bq.data.empty()) RequireShape(lw.bq, {q_dim}, prefix + "bq");
+    if (!lw.bk.data.empty()) RequireShape(lw.bk, {kv_dim}, prefix + "bk");
+    if (!lw.bv.data.empty()) RequireShape(lw.bv, {kv_dim}, prefix + "bv");
     RequireShape(lw.wo, {c.dim, q_dim}, prefix + "wo");
     RequireShape(lw.ffn_norm, {c.dim}, prefix + "ffn_norm");
     RequireShape(lw.w_gate, {c.hidden_dim, c.dim}, prefix + "w_gate");
@@ -382,10 +393,19 @@ void ValidateLoadedShapes(const MiniLlamaModel& model) {
 //从metadata拼ModelConfig；优先qwen2.*，没有再试llama.*
 ModelConfig BuildConfig(const std::string& path) {
   ModelConfig config;
+  std::string architecture;
+  if (!GgufGetMetadataString(path, "general.architecture", architecture) ||
+      (architecture != "llama" && architecture != "qwen2")) {
+    throw std::runtime_error("unsupported GGUF architecture: " + architecture);
+  }
+  config.rope_type = architecture == "qwen2" ? RopeType::kNeoX : RopeType::kNormal;
 
   auto get_u32 = [&](const std::string& key, int fallback) -> int {
     int64_t v = 0;
     if (GgufGetMetadataInt(path, key, v)) {
+      if (v < 0 || v > std::numeric_limits<int>::max()) {
+        throw std::runtime_error("GGUF integer out of range: " + key);
+      }
       return static_cast<int>(v);
     }
     return fallback;
@@ -440,6 +460,22 @@ ModelConfig BuildConfig(const std::string& path) {
   }
 
   config.head_dim = config.dim / config.n_heads;
+  if (config.head_dim % 2 != 0 || !std::isfinite(config.rope_theta) ||
+      config.rope_theta <= 0 || !std::isfinite(config.rms_norm_eps) ||
+      config.rms_norm_eps <= 0) {
+    throw std::runtime_error("invalid RoPE dimension, frequency base or norm epsilon");
+  }
+  // 这两种结构只支持完整 head 的普通 RoPE，不默默忽略缩放配置。
+  int rotary_dim = get_u32(architecture + ".rope.dimension_count", config.head_dim);
+  std::string scaling;
+  if (rotary_dim != config.head_dim ||
+      (GgufGetMetadataString(path, architecture + ".rope.scaling.type", scaling) &&
+       scaling != "none")) {
+    throw std::runtime_error("unsupported partial or scaled RoPE");
+  }
+  if (get_u32(architecture + ".attention.sliding_window", 0) > 0) {
+    throw std::runtime_error("sliding-window attention is not supported");
+  }
 
   std::cout << "GGUF config: vocab=" << config.vocab_size
             << " dim=" << config.dim << " layers=" << config.n_layers
@@ -473,12 +509,18 @@ MiniLlamaModel LoadGgufModel(const std::string& gguf_path) {
 
   //先建「内部名 -> tensor info」索引，跳过不认识的张量
   std::map<std::string, const GgufTensorInfo*> tensor_map;
-  for (const auto& t : reader.tensors) {
+  try {
+   for (const auto& t : reader.tensors) {
     std::string mapped = MapTensorName(t.name);
     if (mapped.empty()) {
       continue;
     }
-    tensor_map[mapped] = &t;
+    if (!tensor_map.emplace(mapped, &t).second) {
+      throw std::runtime_error("duplicate tensor mapping: " + mapped);
+    }
+   }
+  } catch (const std::exception& e) {
+    return LoadFailure(e.what());
   }
 
   //按映射名读一块，并解码成F32
@@ -494,6 +536,13 @@ MiniLlamaModel LoadGgufModel(const std::string& gguf_path) {
     if (raw.empty()) {
       throw std::runtime_error("failed to read tensor: " + mapped_name);
     }
+    const bool linear = mapped_name == "lm_head" ||
+        (mapped_name.rfind("layers.", 0) == 0 && mapped_name.find(".w") != std::string::npos);
+    if (linear && shape.size() == 2 &&
+        (info->type == kGgmlTypeQ80 || info->type == kGgmlTypeQ40 || info->type == kGgmlTypeQ41)) {
+      if (shape[1] % 32 != 0) throw std::runtime_error("GGUF quantized row is not block aligned");
+      return TensorFromQuantized(std::move(raw), shape[0], shape[1], static_cast<QuantType>(info->type));
+    }
     return DecodeTensor(raw, shape, info->type);
   };
 
@@ -508,6 +557,10 @@ MiniLlamaModel LoadGgufModel(const std::string& gguf_path) {
       lw.wq = load_tensor(prefix + "wq");
       lw.wk = load_tensor(prefix + "wk");
       lw.wv = load_tensor(prefix + "wv");
+      const bool needs_bias = c.rope_type == RopeType::kNeoX;
+      if (needs_bias || tensor_map.count(prefix + "bq")) lw.bq = load_tensor(prefix + "bq");
+      if (needs_bias || tensor_map.count(prefix + "bk")) lw.bk = load_tensor(prefix + "bk");
+      if (needs_bias || tensor_map.count(prefix + "bv")) lw.bv = load_tensor(prefix + "bv");
       lw.wo = load_tensor(prefix + "wo");
       lw.ffn_norm = load_tensor(prefix + "ffn_norm");
       lw.w_gate = load_tensor(prefix + "w_gate");

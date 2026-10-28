@@ -8,3 +8,6 @@ CMakeFiles/
 *.obj
 *.pdb
 *.ilk
+
+__pycache__/
+*.pyc

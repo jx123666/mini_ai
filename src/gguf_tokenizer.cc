@@ -81,6 +81,20 @@ bool GgufTokenizer::Load(const std::string& gguf_path) {
   bos_id_ = -1;
   eos_id_ = -1;
   unk_id_ = -1;
+  pre_tokenizer_.clear();
+  add_bos_ = add_eos_ = false;
+  GgufGetMetadataBool(gguf_path, "tokenizer.ggml.add_bos_token", add_bos_);
+  GgufGetMetadataBool(gguf_path, "tokenizer.ggml.add_eos_token", add_eos_);
+  std::string tokenizer_model;
+  if (GgufGetMetadataString(gguf_path, "tokenizer.ggml.model", tokenizer_model) && tokenizer_model != "gpt2") {
+    std::cerr << "Unsupported GGUF tokenizer: " << tokenizer_model << '\n';
+    return false;
+  }
+  GgufGetMetadataString(gguf_path, "tokenizer.ggml.pre", pre_tokenizer_);
+  if (!pre_tokenizer_.empty() && pre_tokenizer_ != "gpt-2" && pre_tokenizer_ != "qwen2") {
+    std::cerr << "Unsupported GGUF pre-tokenizer: " << pre_tokenizer_ << '\n';
+    return false;
+  }
   ResetByteMap();
 
   std::vector<std::string> tokens;
@@ -115,6 +129,12 @@ bool GgufTokenizer::Load(const std::string& gguf_path) {
     unk_id_ = static_cast<int>(unk);
   }
 
+  if (bos_id_ < -1 || eos_id_ < -1 || unk_id_ < -1 ||
+      bos_id_ >= vocab_size() || eos_id_ >= vocab_size() || unk_id_ >= vocab_size() ||
+      (add_bos_ && bos_id_ < 0) || (add_eos_ && eos_id_ < 0)) {
+    std::cerr << "Invalid GGUF tokenizer special ids\n";
+    return false;
+  }
   std::cout << "GGUF tokenizer loaded: vocab=" << vocab_.size()
             << " merges=" << merge_ranks_.size()
             << " special=" << special_tokens_.size() << " bos=" << bos_id_
@@ -128,6 +148,8 @@ bool GgufTokenizer::LoadPieces(const std::vector<std::string>& tokens,
   bos_id_ = bos_id;
   eos_id_ = eos_id;
   unk_id_ = unk_id;
+  pre_tokenizer_.clear();
+  add_bos_ = add_eos_ = false;
   ResetByteMap();
   IndexTokens(tokens, nullptr);
   IndexMerges(merges);
@@ -135,8 +157,11 @@ bool GgufTokenizer::LoadPieces(const std::vector<std::string>& tokens,
 }
 
 std::vector<int> GgufTokenizer::Encode(const std::string& text) const {
-  return EncodeWithBpe(text, b2u_, vocab_, merge_ranks_, special_tokens_,
-                       unk_id_);
+  auto ids = EncodeWithBpe(text, b2u_, vocab_, merge_ranks_, special_tokens_,
+                          unk_id_, pre_tokenizer_);
+  if (add_bos_) ids.insert(ids.begin(), bos_id_);
+  if (add_eos_) ids.push_back(eos_id_);
+  return ids;
 }
 
 std::string GgufTokenizer::DecodeToken(int token) const {

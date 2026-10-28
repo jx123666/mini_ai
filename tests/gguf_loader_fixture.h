@@ -147,6 +147,14 @@ inline void AddLayerTensors(std::vector<GgufTensorFixture>& tensors,
                      lw.wk.data.size(), 0});
   tensors.push_back({prefix + "attn_v.weight", lw.wv.shape, lw.wv.data.data(),
                      lw.wv.data.size(), 0});
+  const std::pair<const char*, const Tensor*> biases[] = {
+      {"attn_q.bias", &lw.bq}, {"attn_k.bias", &lw.bk}, {"attn_v.bias", &lw.bv}};
+  for (const auto& bias : biases) {
+    if (!bias.second->data.empty()) {
+      tensors.push_back({prefix + bias.first, bias.second->shape,
+                         bias.second->data.data(), bias.second->size(), 0});
+    }
+  }
   tensors.push_back({prefix + "attn_output.weight", lw.wo.shape,
                      lw.wo.data.data(), lw.wo.data.size(), 0});
   tensors.push_back({prefix + "ffn_norm.weight", lw.ffn_norm.shape,
@@ -160,10 +168,9 @@ inline void AddLayerTensors(std::vector<GgufTensorFixture>& tensors,
 }
 
 //从models/tiny生成一份可被LoadGgufModel吃下的临时GGUF
-inline std::filesystem::path WriteTinyLlamaGgufFixture(
-    const std::string& name) {
-  MiniLlamaModel source =
-      LoadModel("models/tiny/model.json", "models/tiny/model.bin");
+inline std::filesystem::path WriteModelGgufFixture(
+    const std::string& name, const MiniLlamaModel& source,
+    const std::string& architecture = "llama") {
   if (!source.loaded) {
     throw std::runtime_error("failed to load tiny source model: " +
                              source.load_error);
@@ -201,24 +208,24 @@ inline std::filesystem::path WriteTinyLlamaGgufFixture(
   AppendU64Le(data, static_cast<uint64_t>(tensors.size()));
   AppendU64Le(data, kMetadataCount);
 
-  AppendMetadataString(data, "general.architecture", "llama");
+  AppendMetadataString(data, "general.architecture", architecture);
   AppendMetadataString(data, "general.name", "mini-ai-tiny-loader-test");
   AppendMetadataU32(data, "general.alignment",
                     static_cast<uint32_t>(kAlignment));
-  AppendMetadataU32(data, "llama.block_count",
+  AppendMetadataU32(data, architecture + ".block_count",
                     static_cast<uint32_t>(source.config.n_layers));
-  AppendMetadataU32(data, "llama.context_length",
+  AppendMetadataU32(data, architecture + ".context_length",
                     static_cast<uint32_t>(source.config.max_seq_len));
-  AppendMetadataU32(data, "llama.embedding_length",
+  AppendMetadataU32(data, architecture + ".embedding_length",
                     static_cast<uint32_t>(source.config.dim));
-  AppendMetadataU32(data, "llama.feed_forward_length",
+  AppendMetadataU32(data, architecture + ".feed_forward_length",
                     static_cast<uint32_t>(source.config.hidden_dim));
-  AppendMetadataU32(data, "llama.attention.head_count",
+  AppendMetadataU32(data, architecture + ".attention.head_count",
                     static_cast<uint32_t>(source.config.n_heads));
-  AppendMetadataU32(data, "llama.attention.head_count_kv",
+  AppendMetadataU32(data, architecture + ".attention.head_count_kv",
                     static_cast<uint32_t>(source.config.n_kv_heads));
-  AppendMetadataF32(data, "llama.rope.freq_base", source.config.rope_theta);
-  AppendMetadataF32(data, "llama.attention.layer_norm_rms_epsilon",
+  AppendMetadataF32(data, architecture + ".rope.freq_base", source.config.rope_theta);
+  AppendMetadataF32(data, architecture + ".attention.layer_norm_rms_epsilon",
                     source.config.rms_norm_eps);
   AppendMetadataTokens(data, source.config.vocab_size);
 
@@ -241,6 +248,11 @@ inline std::filesystem::path WriteTinyLlamaGgufFixture(
   }
   out.write(data.data(), static_cast<std::streamsize>(data.size()));
   return path;
+}
+
+inline std::filesystem::path WriteTinyLlamaGgufFixture(const std::string& name) {
+  return WriteModelGgufFixture(name,
+      LoadModel("models/tiny/model.json", "models/tiny/model.bin"));
 }
 
 }

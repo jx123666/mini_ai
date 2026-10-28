@@ -1,5 +1,4 @@
-//模型加载：读 model.json 清单 + model.bin 权重
-//还能 inspect 只看元数据，不把权重读进内存
+//模型加载：读model.json+model.bin权重
 #ifndef INCLUDE_MINI_LLAMA_LOADER_H_
 #define INCLUDE_MINI_LLAMA_LOADER_H_
 
@@ -10,7 +9,7 @@
 
 namespace mini_llama {
 
-//清单里一条 tensor 的描述：名字、形状、类型、在 bin 里的位置
+//一条信息：名字、形状、类型、在bin里的位置
 struct TensorInfo {
   std::string name;
   std::vector<int> shape;
@@ -19,7 +18,7 @@ struct TensorInfo {
   size_t byte_size = 0;
 };
 
-//清单里可选的分词器信息；没有这块时默认 ascii
+//可选的分词器信息
 struct TokenizerInfo {
   std::string type = "ascii";
   std::string path;
@@ -34,10 +33,10 @@ struct ModelManifest {
   std::vector<TensorInfo> tensors;
 };
 
-//解析 model.json；字段不对或 tensor 对不上会抛异常
+//解析model.json；字段不对或tensor对不上会抛出异常
 ModelManifest ParseManifest(const std::string& config_path);
 
-//按清单从 bin 里把权重读出来
+//从bin里把权重读出来
 MiniLlamaModel LoadModel(const std::string& config_path,
                          const std::string& weights_path);
 

@@ -26,6 +26,9 @@ class PromptBuilder {
   std::string BuildQwen2(const std::vector<ChatMessage>& messages) const;
 };
 
+//从GGUF读聊天模板；没有模板且架构是qwen2时返回"qwen2"
+std::string LoadChatTemplateFromGguf(const std::string& gguf_path);
+
 }
 
 #endif

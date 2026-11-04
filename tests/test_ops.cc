@@ -233,8 +233,23 @@ static bool TestArgMax() {
 }
 
 //启动时把上面的算子测试登记进极简框架
+static bool TestRopeLayouts() {
+  Tensor q({1, 4}), k({1, 4});
+  q.data = k.data = {1, 2, 3, 4};
+  mini_llama::Rope(q, k, 1, 10000.0f, mini_llama::RopeType::kNeoX);
+  MINI_LLAMA_ASSERT_NEAR(q[0], std::cos(1.0f) - 3 * std::sin(1.0f), 1e-6f);
+  MINI_LLAMA_ASSERT_NEAR(q[2], std::sin(1.0f) + 3 * std::cos(1.0f), 1e-6f);
+  MINI_LLAMA_ASSERT_NEAR(q[1], 2 * std::cos(0.01f) - 4 * std::sin(0.01f), 1e-6f);
+  q.data = k.data = {1, 2, 3, 4};
+  mini_llama::Rope(q, k, 1, 10000.0f);
+  MINI_LLAMA_ASSERT_NEAR(q[0], std::cos(1.0f) - 2 * std::sin(1.0f), 1e-6f);
+  MINI_LLAMA_ASSERT_NEAR(q[2], 3 * std::cos(0.01f) - 4 * std::sin(0.01f), 1e-6f);
+  return true;
+}
+
 static struct OpsTestRegistrar {
   OpsTestRegistrar() {
+    RegisterTest("rope_normal_and_neox", TestRopeLayouts);
     RegisterTest("matmul_identity", TestMatmulIdentity);
     RegisterTest("matmul_simple", TestMatmulSimple);
     RegisterTest("matmul_rectangular", TestMatmulRectangular);

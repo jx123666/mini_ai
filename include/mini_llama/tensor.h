@@ -1,16 +1,4 @@
-// =============================================================================
-// 文件作用：tensor.h
-//   定义推理引擎最底层的数据结构 —— 稠密浮点张量 Tensor。
-//   在大模型推理里，激活值、权重、注意力分数等几乎都以 Tensor 形式流动。
-//
-// 设计要点（对应验收：理解张量结构）：
-//   1. 逻辑上是多维数组（由 shape 描述）
-//   2. 物理上是一维连续内存（data: vector<float>），采用 row-major 行优先布局
-//   3. 提供 FlatIndex / At / At2 等访问器，把「多维下标」映射成「一维偏移」
-//
-// 与 mini-llama 课程文档对应：
-//   include/mini_llama/tensor.h  /  src/tensor.cc
-// =============================================================================
+// F32 稠密张量，元素按行优先连续存储。
 
 #ifndef INCLUDE_MINI_LLAMA_TENSOR_H_
 #define INCLUDE_MINI_LLAMA_TENSOR_H_
@@ -19,6 +7,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <memory>
+#include "mini_llama/quantized_tensor.h"
 
 namespace mini_llama {
 
@@ -33,6 +23,7 @@ namespace mini_llama {
 struct Tensor {
   std::vector<float> data;  // 连续存放的全部元素
   std::vector<int> shape;   // 各维长度，如 {m, k} 表示矩阵
+  std::shared_ptr<const QuantizedStorage> quantized;
 
   Tensor() = default;
 
@@ -40,8 +31,10 @@ struct Tensor {
   explicit Tensor(const std::vector<int>& input_shape, float fill = 0.0f);
 
   // 元素总数 = shape 各维之积
-  size_t size() const { return data.size(); }
-  size_t num_elements() const { return data.size(); }
+  size_t size() const {
+    return quantized ? static_cast<size_t>(quantized->rows) * quantized->cols : data.size();
+  }
+  size_t num_elements() const { return size(); }
 
   // 维度个数，例如矩阵为 2
   int num_dims() const { return static_cast<int>(shape.size()); }
@@ -70,13 +63,19 @@ struct Tensor {
   // 形状断言：与预期不符时抛异常，帮助定位推理中的 shape bug
   void AssertShape(const std::vector<int>& expected, const char* caller) const;
 
-  // 改 shape，但元素个数必须不变（只改「视图」，不改数据）
+  // 返回一份使用新形状的副本，元素个数必须保持不变。
   Tensor ReshapeChecked(const std::vector<int>& new_shape,
                         const char* caller) const;
 
   // 一维下标直达 data（最快，但调用者需自己保证不越界）
-  float& operator[](size_t i) { return data[i]; }
-  float operator[](size_t i) const { return data[i]; }
+  float& operator[](size_t i) {
+    if (quantized) throw std::runtime_error("dequantize tensor before accessing F32 elements");
+    return data[i];
+  }
+  float operator[](size_t i) const {
+    if (quantized) throw std::runtime_error("dequantize tensor before accessing F32 elements");
+    return data[i];
+  }
 
   std::string ShapeStringShort() const;
   std::string ShapeString() const { return ShapeStringShort(); }

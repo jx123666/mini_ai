@@ -21,7 +21,7 @@ bool RadixTree::empty() const { return terminal_count_ == 0; }
 
 size_t RadixTree::size() const { return terminal_count_; }
 
-//从 a[a_offset..] 和 b[0..] 比，看公共前缀多长
+//从a[a_offset..]和b[0..] 比，看公共前缀多长
 size_t RadixTree::CommonPrefixLength(const std::vector<int>& a,
                                      size_t a_offset,
                                      const std::vector<int>& b) {
@@ -33,7 +33,7 @@ size_t RadixTree::CommonPrefixLength(const std::vector<int>& a,
   return i;
 }
 
-//插入一条 token 序列
+//插入一条token序列
 void RadixTree::Insert(const std::vector<int>& tokens) {
   if (tokens.empty()) {
     //空序列也算一条，标在根上
@@ -46,7 +46,7 @@ void RadixTree::Insert(const std::vector<int>& tokens) {
   InsertInto(&root_, tokens);
 }
 
-//往 parent 下面插 suffix
+//往parent下面插suffix
 void RadixTree::InsertInto(Node* parent, std::vector<int> suffix) {
   auto child_it = parent->children.find(suffix[0]);
   if (child_it == parent->children.end()) {

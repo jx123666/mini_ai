@@ -1,8 +1,17 @@
+#include <string>
+#include <vector>
+
 #include "mini_llama/chat.h"
+#include "mini_llama/prompt_builder.h"
+#include "mini_llama/sampler.h"
+#include "mini_llama/terminal.h"
 #include "tests/test_main.h"
 
 using mini_llama::ChatMessage;
 using mini_llama::ChatSession;
+using mini_llama::PromptBuilder;
+using mini_llama::SamplingParams;
+using mini_llama::Terminal;
 
 //消息能存住role和content
 static bool TestChatMessageStoresRoleAndContent() {
@@ -52,6 +61,7 @@ static bool TestChatSessionClearResets() {
   MINI_LLAMA_ASSERT_NEAR(session.total_time_ms, 0.0, 1e-6);
   return true;
 }
+
 //测试token历史
 static bool TestChatSessionTracksTokenHistory() {
   ChatSession session;
@@ -84,7 +94,123 @@ static bool TestChatSessionRecordTurnAccumulates() {
   MINI_LLAMA_ASSERT_NEAR(session.total_time_ms, 300.0, 1e-6);
   return true;
 }
-//测试会话
+
+//空历史只剩 Assistant: 前缀
+static bool TestPromptBuilderEmptyHistory() {
+  PromptBuilder builder;
+  std::vector<ChatMessage> messages;
+  std::string prompt = builder.Build(messages);
+  MINI_LLAMA_ASSERT_TRUE(prompt == "Assistant:");
+  return true;
+}
+
+//多轮拼成 System/User/Assistant 文本
+static bool TestPromptBuilderMultiTurn() {
+  PromptBuilder builder;
+  std::vector<ChatMessage> messages = {{"system", "You are helpful."},
+                                       {"user", "hi"},
+                                       {"assistant", "Hello!"},
+                                       {"user", "bye"}};
+  std::string prompt = builder.Build(messages);
+  MINI_LLAMA_ASSERT_TRUE(prompt ==
+                         "System: You are helpful.\n"
+                         "User: hi\n"
+                         "Assistant: Hello!\n"
+                         "User: bye\n"
+                         "Assistant:");
+  return true;
+}
+
+//不认识的 role 直接丢掉
+static bool TestPromptBuilderIgnoresUnknownRoles() {
+  PromptBuilder builder;
+  std::vector<ChatMessage> messages = {{"unknown", "ignored"},
+                                       {"user", "hello"}};
+  std::string prompt = builder.Build(messages);
+  MINI_LLAMA_ASSERT_TRUE(prompt == "User: hello\nAssistant:");
+  return true;
+}
+
+//qwen2：没有 system 时补默认，并带上 assistant 前缀
+static bool TestPromptBuilderQwen2TemplateInjectsSystemAndPrefix() {
+  PromptBuilder builder;
+  builder.SetChatTemplate("qwen2");
+  std::vector<ChatMessage> messages = {{"user", "你好"}};
+  std::string prompt = builder.Build(messages);
+  MINI_LLAMA_ASSERT_TRUE(prompt ==
+                         "<|im_start|>system\n"
+                         "You are a helpful assistant.<|im_end|>\n"
+                         "<|im_start|>user\n"
+                         "你好<|im_end|>\n"
+                         "<|im_start|>assistant\n");
+  return true;
+}
+
+//qwen2：已有 system 就原样保留
+static bool TestPromptBuilderQwen2TemplateKeepsExistingSystem() {
+  PromptBuilder builder;
+  builder.SetChatTemplate("qwen2");
+  std::vector<ChatMessage> messages = {{"system", "Be concise."},
+                                       {"user", "hi"}};
+  std::string prompt = builder.Build(messages);
+  MINI_LLAMA_ASSERT_TRUE(prompt ==
+                         "<|im_start|>system\n"
+                         "Be concise.<|im_end|>\n"
+                         "<|im_start|>user\n"
+                         "hi<|im_end|>\n"
+                         "<|im_start|>assistant\n");
+  return true;
+}
+
+//下面几个Terminal只做冒烟测试，程序能运行不报错就行
+static bool TestTerminalPrintUserPrompt() {
+  Terminal term;
+  term.PrintUserPrompt();
+  return true;
+}
+
+static bool TestTerminalPrintAssistantPrefix() {
+  Terminal term;
+  term.PrintAssistantPrefix();
+  return true;
+}
+
+static bool TestTerminalPrintHelp() {
+  Terminal term;
+  term.PrintHelp();
+  return true;
+}
+
+static bool TestTerminalPrintStats() {
+  Terminal term;
+  ChatSession session;
+  session.RecordTurn(10, 5, 250.0);
+  term.PrintStats(session);
+  return true;
+}
+
+static bool TestTerminalPrintParams() {
+  Terminal term;
+  SamplingParams params;
+  params.temperature = 0.7f;
+  params.top_k = 40;
+  params.seed = 42;
+  term.PrintParams(params);
+  return true;
+}
+
+static bool TestTerminalPrintMessage() {
+  Terminal term;
+  term.PrintMessage("test message");
+  return true;
+}
+
+static bool TestTerminalNewLine() {
+  Terminal term;
+  term.NewLine();
+  return true;
+}
+
 static struct ChatTestRegistrar {
   ChatTestRegistrar() {
     RegisterTest("chat_message_stores_role_and_content",
@@ -99,5 +225,21 @@ static struct ChatTestRegistrar {
                  TestChatSessionTracksTokenHistory);
     RegisterTest("chat_session_records_prefix_cache",
                  TestChatSessionRecordsPrefixCache);
+    RegisterTest("prompt_builder_empty_history", TestPromptBuilderEmptyHistory);
+    RegisterTest("prompt_builder_multi_turn", TestPromptBuilderMultiTurn);
+    RegisterTest("prompt_builder_ignores_unknown_roles",
+                 TestPromptBuilderIgnoresUnknownRoles);
+    RegisterTest("prompt_builder_qwen2_template_injects_system_and_prefix",
+                 TestPromptBuilderQwen2TemplateInjectsSystemAndPrefix);
+    RegisterTest("prompt_builder_qwen2_template_keeps_existing_system",
+                 TestPromptBuilderQwen2TemplateKeepsExistingSystem);
+    RegisterTest("terminal_print_user_prompt", TestTerminalPrintUserPrompt);
+    RegisterTest("terminal_print_assistant_prefix",
+                 TestTerminalPrintAssistantPrefix);
+    RegisterTest("terminal_print_help", TestTerminalPrintHelp);
+    RegisterTest("terminal_print_stats", TestTerminalPrintStats);
+    RegisterTest("terminal_print_params", TestTerminalPrintParams);
+    RegisterTest("terminal_print_message", TestTerminalPrintMessage);
+    RegisterTest("terminal_new_line", TestTerminalNewLine);
   }
 } chat_test_registrar;

@@ -1,16 +1,13 @@
-// =============================================================================
-// 文件作用：tokenizer.h
-//   定义「文本 <-> token id」的接口，以及本任务要掌握的三类分词器。
-//
+
 // 模型不认识字符串，只认识整数 id。Tokenizer 做两件事：
 //   Encode：把 "hello" 变成 [1, 104, 101, ...] 这种 id 序列
 //   Decode：把 id 序列变回能打印的文字
 //
-// 本文件里的三个类，由浅到深：
-//   1) AsciiTokenizer      一个字符一个 id（验收：能实现）
-//   2) JsonVocabTokenizer  从词表文件按「最长匹配」切词
-//   3) BpeTokenizer        按合并规则把相邻片段拼成更长的词（验收：理解合并）
-// =============================================================================
+// 本文件里的三个类
+//AsciiTokenizer      一个字符一个id
+//JsonVocabTokenizer  从词表文件按「最长匹配」切词
+//BpeTokenizer        按合并规则把相邻片段拼成更长的词
+
 
 #ifndef INCLUDE_MINI_LLAMA_TOKENIZER_H_
 #define INCLUDE_MINI_LLAMA_TOKENIZER_H_
